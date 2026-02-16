@@ -307,6 +307,27 @@ async function listCronJobsHTTP(): Promise<{ ok: boolean; jobs?: Array<{ id: str
   }
 }
 
+/**
+ * Trigger an agent's cron job immediately (fire-and-forget).
+ * Finds the cron job by agent ID and runs it via the CLI.
+ */
+export async function triggerAgentCron(agentId: string): Promise<void> {
+  try {
+    const result = await listCronJobs();
+    if (!result.ok || !result.jobs) return;
+    const job = result.jobs.find((j: any) => j.agentId === agentId);
+    if (!job) return;
+    // Fire and forget via CLI — don't await completion
+    const bin = await findOpenclawBinary();
+    const args = bin === "npx"
+      ? ["openclaw", "cron", "run", job.id, "--timeout", "600000"]
+      : ["cron", "run", job.id, "--timeout", "600000"];
+    execFile(bin, args, { timeout: 610_000 }, () => { /* ignore result */ });
+  } catch {
+    // Best effort — don't let cron trigger failures break step completion
+  }
+}
+
 export async function deleteCronJob(jobId: string): Promise<{ ok: boolean; error?: string }> {
   // --- Try HTTP first ---
   const httpResult = await deleteCronJobHTTP(jobId);

@@ -6,6 +6,7 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { execSync, execFileSync } from "node:child_process";
 import { teardownWorkflowCronsIfIdle } from "./agent-cron.js";
+import { triggerAgentCron } from "./gateway-api.js";
 import { emitEvent } from "./events.js";
 import { logger } from "../lib/logger.js";
 import { getMaxRoleTimeoutSeconds } from "./install.js";
@@ -843,6 +844,11 @@ function advancePipeline(runId: string): { advanced: boolean; runCompleted: bool
     ).run(next.id);
     emitEvent({ ts: new Date().toISOString(), event: "pipeline.advanced", runId, workflowId: wfId, stepId: next.step_id });
     emitEvent({ ts: new Date().toISOString(), event: "step.pending", runId, workflowId: wfId, stepId: next.step_id });
+    // Auto-kick: trigger the next agent's cron immediately (fire-and-forget)
+    const nextStep = db.prepare("SELECT agent_id FROM steps WHERE id = ?").get(next.id) as { agent_id: string } | undefined;
+    if (nextStep?.agent_id) {
+      triggerAgentCron(nextStep.agent_id).catch(() => { /* best effort */ });
+    }
     return { advanced: true, runCompleted: false };
   } else {
     db.prepare(
