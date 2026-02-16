@@ -11,7 +11,7 @@ description: |
 context:
   repo: supergeri/mapper-api
   linear_project: AMA
-  linear_team: AmakaFlow
+  linear_team: MyAmaka
 
 polling:
   model: anthropic/claude-haiku-4-5-20251001
@@ -69,6 +69,20 @@ steps:
       If a ticket ID is present, you MUST look up THAT EXACT ticket in Linear
       and return its details. Do NOT search the backlog. Do NOT pick a different
       ticket. Just fetch the one specified and return it.
+      HOWEVER — before returning it, check for an existing open PR (see step 0 below).
+
+      Step 0 — DUPLICATE WORK CHECK (run before selecting ANY ticket):
+      Check for existing open PRs in the repo:
+        gh pr list --repo {{repo}} --state open --json title,number,headRefName
+      For each candidate ticket ID, check if any open PR's title or branch name
+      contains that ticket ID (e.g., "AMA-607" appears in the PR title or branch).
+      If an open PR already exists for a ticket:
+        - If the TASK specified that exact ticket ID, reply:
+          STATUS: duplicate
+          TICKET_ID: <the ticket ID>
+          EXISTING_PR: <the PR number and URL>
+          REASON: An open PR already exists for this ticket
+        - If picking from the backlog, skip that ticket and pick the next one.
 
       ONLY if the TASK contains NO ticket ID, then pick from the backlog:
       1. Query Linear for issues in the {{linear_team}} team where:
@@ -79,9 +93,9 @@ steps:
          - Tickets with "SPIKE" label
          - Tickets that are purely documentation or research with no code changes
       3. Sort by priority (Urgent > High > Medium > Low > No priority)
-      4. Pick the highest-priority unblocked CODING ticket
+      4. Pick the highest-priority unblocked CODING ticket that has NO existing open PR
       5. Get full ticket details: title, description, acceptance criteria
-      6. If no tickets are ready, reply with STATUS: no_work
+      6. If no tickets are ready (or all have existing PRs), reply with STATUS: no_work
 
       Reply with EXACTLY this format:
       STATUS: done
@@ -278,13 +292,13 @@ steps:
       TICKET: {{ticket_id}}
 
       Task:
-      1. Run: gh pr reviews {{pr_number}} --repo {{repo}} --json state,body
-      2. Run: gh pr view {{pr_number}} --repo {{repo}} --json reviews,comments
-      3. If the review state is "APPROVED" or no reviews exist yet, reply:
+      1. Run: gh pr view {{pr_number}} --repo {{repo}} --json reviews,comments,reviewDecision
+         (Note: "gh pr reviews" does NOT support --json. Always use "gh pr view --json reviews")
+      2. If reviewDecision is "APPROVED" or no reviews exist yet, reply:
          STATUS: done
          REVIEW_STATE: approved
          (This is a pass-through — no fixes needed)
-      4. If the review state is "CHANGES_REQUESTED":
+      3. If reviewDecision is "CHANGES_REQUESTED" or any review has state "CHANGES_REQUESTED":
          a. Read ALL review comments carefully
          b. Check out the PR branch: gh pr checkout {{pr_number}} --repo {{repo}}
          c. Make the requested fixes in the code
@@ -307,20 +321,32 @@ steps:
   - id: wait_review
     agent: closer
     input: |
-      Check PR {{pr_number}} for Claude code review approval.
+      Check PR {{pr_number}} for code review status.
 
       PR: {{pr_number}}
       URL: {{pr_url}}
       REPO: {{repo}}
 
+      ⚠️ CRITICAL: Do NOT use sleep, wait, or polling loops. Check ONCE and return immediately.
+      Do NOT use "gh pr reviews" — that command does not support --json.
+
       Task:
-      1. Run: gh pr checks {{pr_number}} --repo {{repo}}
-         Wait until CI checks are complete (poll every 30s, up to 5 min)
-      2. Run: gh pr reviews {{pr_number}} --repo {{repo}} --json state,body
-      3. If review state is "APPROVED": reply STATUS: approved
-      4. If review state is "CHANGES_REQUESTED": reply STATUS: changes_requested
-         Include REVIEW_FEEDBACK with the review comments so the developer knows what to fix
-      5. If no review yet: poll every 30s for up to 5 minutes, then reply STATUS: changes_requested
+      1. Check CI status (ONE check, no polling):
+         gh pr checks {{pr_number}} --repo {{repo}}
+
+      2. Get review data:
+         gh pr view {{pr_number}} --repo {{repo}} --json reviews,reviewDecision,state,statusCheckRollup
+
+      3. Evaluate review status using this logic:
+         - reviewDecision is "APPROVED" → STATUS: approved
+         - Any review with state "APPROVED" → STATUS: approved
+         - Any review with state "COMMENTED" and body contains "approved" → STATUS: approved
+           (Note: automated code review bots like Claude use COMMENTED state, not APPROVED.
+            Treat COMMENTED reviews as approval unless they explicitly request changes.)
+         - reviewDecision is "CHANGES_REQUESTED" → STATUS: changes_requested
+         - Any review with state "CHANGES_REQUESTED" → STATUS: changes_requested
+         - No reviews at all AND all CI checks pass → STATUS: approved
+         - No reviews AND CI checks fail or pending → STATUS: changes_requested
 
       If approved, reply:
       STATUS: approved
@@ -339,41 +365,53 @@ steps:
   - id: merge_pr
     agent: closer
     input: |
-      Merge PR #{{pr_number}} for {{ticket_id}} into main.
+      Merge PR {{pr_number}} for {{ticket_id}} into main.
 
       PR: {{pr_number}}
       URL: {{pr_url}}
       REPO: {{repo}}
       TICKET: {{ticket_id}}
 
+      ⚠️ CRITICAL: Do NOT use sleep, wait, or polling loops. Check ONCE and return immediately.
+      🚨 ABSOLUTE RULE: Do NOT fabricate, guess, or invent a merge SHA. You MUST get it from the GitHub API. If you cannot confirm the merge, report STATUS: escalate.
+
       Task:
-      1. Check that CI checks have passed:
+      1. Check that CI checks have passed (ONE check, no polling):
          gh pr checks {{pr_number}} --repo {{repo}}
-         If checks are still running, wait up to 5 minutes (poll every 30s).
+         If checks are still running or failing, reply STATUS: escalate with details.
 
       2. Check if the PR is mergeable:
          gh pr view {{pr_number}} --repo {{repo}} --json mergeable,mergeStateStatus
 
       3. If mergeable: merge with squash:
          gh pr merge {{pr_number}} --repo {{repo}} --squash --delete-branch
+         IMPORTANT: Check the exit code. If the command fails, do NOT proceed — report STATUS: escalate.
 
       4. If NOT mergeable (conflicts with main): attempt rebase:
-         a. gh pr checkout {{pr_number}} --repo {{repo}}
-         b. git fetch origin main
-         c. git rebase origin/main
-         d. If rebase succeeds (no conflicts): git push --force-with-lease
-         e. Wait for CI to re-run, then try merge again
+         a. Clone/cd into the repo work directory:
+            git clone https://github.com/{{repo}}.git /tmp/{{ticket_id}}-merge || true
+            cd /tmp/{{ticket_id}}-merge
+         b. gh pr checkout {{pr_number}} --repo {{repo}}
+         c. git fetch origin main
+         d. git rebase origin/main
+         e. If rebase succeeds (no conflicts): git push --force-with-lease, then try merge again
          f. If rebase fails (conflicts): git rebase --abort, then reply STATUS: escalate
 
-      5. Verify the merge succeeded
+      5. MANDATORY VERIFICATION — Do NOT skip this step:
+         Run this command and capture the output:
+         gh pr view {{pr_number}} --repo {{repo}} --json state,mergeCommit --jq '{state: .state, sha: .mergeCommit.oid}'
 
-      If the merge fails after rebase attempt, reply with:
+         - If state is "MERGED": extract the sha from the output. This is your MERGE_SHA.
+         - If state is NOT "MERGED": the merge failed. Reply STATUS: escalate.
+         - If the sha field is null or empty: Reply STATUS: escalate.
+
+      If the merge fails at any point, reply with:
       STATUS: escalate
-      REASON: why the merge failed (include conflict details)
+      REASON: why the merge failed (include exact error output)
 
-      Reply with:
+      If the merge succeeded AND you confirmed state=MERGED AND you have a real SHA:
       STATUS: done
-      MERGE_SHA: the merge commit SHA
+      MERGE_SHA: <the exact sha from gh pr view output — NOT invented>
     expects: "STATUS: done"
     max_retries: 2
     on_fail:
@@ -382,20 +420,27 @@ steps:
   - id: post_merge
     agent: closer
     input: |
-      {{ticket_id}} PR #{{pr_number}} has been merged. Mark ticket complete.
+      {{ticket_id}} PR {{pr_number}} has been merged. Verify the merge and confirm.
 
       TICKET: {{ticket_id}}
       PR: {{pr_number}}
+      REPO: {{repo}}
 
       Task:
-      1. In Linear, move {{ticket_id}} to "Done"
-      2. Log completion in MEMORY.md
-      3. Next iteration will pick up the next ticket
+      1. Verify the PR was actually merged:
+         gh pr view {{pr_number}} --repo {{repo}} --json state,mergedAt --jq '{state, mergedAt}'
+      2. Verify the merge commit is on main:
+         gh api repos/{{repo}}/commits/main --jq '.sha' 2>/dev/null || echo "could not verify"
+      3. Clean up the local work directory if it exists:
+         rm -rf /tmp/{{ticket_id}}-work /tmp/{{ticket_id}}-merge 2>/dev/null || true
+
+      Note: The Linear ticket status will be updated automatically by the poller.
+      Do NOT attempt to modify Linear or write to any files.
 
       Reply with:
       STATUS: done
       TICKET: {{ticket_id}}
-      NEXT: auto-pick next ticket
+      MERGED: true
     expects: "STATUS: done"
     on_fail:
       escalate_to: human

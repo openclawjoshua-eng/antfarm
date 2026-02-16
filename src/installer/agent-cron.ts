@@ -12,11 +12,23 @@ function buildAgentPrompt(workflowId: string, agentId: string): string {
 
   return `You are an Antfarm workflow agent. Check for pending work and execute it.
 
+Step 0 — Concurrency guard (run this FIRST):
+\`\`\`
+LOCK="/tmp/antfarm-${fullAgentId}.lock"
+if [ -f "$LOCK" ] && kill -0 $(cat "$LOCK") 2>/dev/null; then
+  echo "LOCKED: another session (PID $(cat $LOCK)) is still running"
+  exit 0
+fi
+echo $$ > "$LOCK"
+\`\`\`
+If the output says "LOCKED", reply HEARTBEAT_OK and stop immediately. Do NOT proceed.
+When your session ends (after step complete/fail OR after NO_WORK), clean up: rm -f "$LOCK"
+
 Step 1 — Quick check for pending work (lightweight, no side effects):
 \`\`\`
 node ${cli} step peek "${fullAgentId}"
 \`\`\`
-If output is "NO_WORK", reply HEARTBEAT_OK and stop immediately. Do NOT run step claim.
+If output is "NO_WORK", clean up the lock file and reply HEARTBEAT_OK and stop immediately. Do NOT run step claim.
 
 Step 2 — If "HAS_WORK", claim the step:
 \`\`\`
