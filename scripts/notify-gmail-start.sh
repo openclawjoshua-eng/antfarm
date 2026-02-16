@@ -25,7 +25,7 @@ if [ ! -f "$PASSWORD_FILE" ]; then
 fi
 
 export GMAIL_USER="openclawjoshua@gmail.com"
-export GMAIL_APP_PASSWORD="$(cat "$PASSWORD_FILE")"
+export GMAIL_APP_PASSWORD="$(tr -d '\n' < "$PASSWORD_FILE")"
 
 mkdir -p "$(dirname "$LOG_FILE")"
 

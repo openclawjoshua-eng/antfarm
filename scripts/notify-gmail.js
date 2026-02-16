@@ -165,13 +165,17 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  let body = "";
-  for await (const chunk of req) body += chunk;
+  const evt = await new Promise((resolve, reject) => {
+    let body = "";
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => {
+      try { resolve(JSON.parse(body)); }
+      catch { reject(); }
+    });
+    req.on("error", reject);
+  }).catch(() => null);
 
-  let evt;
-  try {
-    evt = JSON.parse(body);
-  } catch {
+  if (!evt) {
     res.writeHead(400);
     res.end("Invalid JSON");
     return;
