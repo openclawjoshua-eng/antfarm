@@ -1,0 +1,229 @@
+id: ai-developer
+name: AI Developer Workflow
+version: 1
+description: |
+  Phase 1 Router Migration Pipeline
+  - Ticket Picker: Auto-select next Linear ticket from backlog
+  - Developer: Generate + fix router code with MiniMax-M2.5
+  - Auditor: Pre-review with DeepSeek (security + best practices)
+  - Reviewer: Final Claude code review
+  - Auto-merge cron monitors and merges when approved
+
+polling:
+  model: anthropic/claude-haiku-4-5-20251001
+  timeoutSeconds: 180
+
+agents:
+  - id: ticket_picker
+    name: Ticket Picker
+    role: analysis
+    model: anthropic/claude-haiku-4-5-20251001
+    description: Auto-picks next ready Linear ticket from Phase 1 backlog
+    workspace:
+      baseDir: agents/ticket_picker
+      files:
+        AGENTS.md: agents/ticket_picker/AGENTS.md
+
+  - id: developer
+    name: Developer
+    role: coding
+    model: minimax-portal/MiniMax-M2.5
+    description: Generates router code with MiniMax-M2.5, applies fixes
+    workspace:
+      baseDir: agents/developer
+      files:
+        AGENTS.md: agents/developer/AGENTS.md
+
+  - id: auditor
+    name: Auditor (DeepSeek)
+    role: analysis
+    model: deepseek/deepseek-chat
+    description: Pre-reviews code for security + performance before PR
+    workspace:
+      baseDir: agents/auditor
+      files:
+        AGENTS.md: agents/auditor/AGENTS.md
+
+  - id: closer
+    name: Closer
+    role: analysis
+    model: anthropic/claude-haiku-4-5-20251001
+    description: Monitors PR status, handles post-merge cleanup
+    workspace:
+      baseDir: agents/closer
+      files:
+        AGENTS.md: agents/closer/AGENTS.md
+
+steps:
+  - id: pick_ticket
+    agent: ticket_picker
+    input: |
+      Pick the next ready ticket from Phase 1 of AMA-583 refactoring.
+
+      Phase 1 backlog (STRICT ORDER - do not skip):
+      1. AMA-588: Follow-along integration tests (✅ DONE - merged)
+      2. AMA-592: Bulk import integration tests (IN PROGRESS)
+      3. AMA-593: Programs router
+      4. AMA-594: Tags router
+      5. AMA-595: Unit tests for programs + tags routers
+      6. AMA-596: Account router
+      7. AMA-598: Unit tests for account router
+      8. AMA-597: Move debug endpoints to health router
+      9. AMA-599: Verify app.py is empty and clean up
+      10. AMA-600: Create ExportService layer
+      11. AMA-601: Unit tests for ExportService
+      12. AMA-602: Implement async export queue
+      13. AMA-603: Unit tests for async export queue
+      14. AMA-605: Final integration tests (MUST BE LAST)
+
+      Task (CRITICAL - FOLLOW EXACT ORDER):
+      1. Pick the NEXT ticket in the sequence above that hasn't been merged yet
+      2. Start with AMA-592 (bulk import tests) if this is the first run
+      3. Check Linear for ticket status, description, acceptance criteria
+      4. Verify all dependencies from previous steps are merged
+      5. Do NOT skip ahead or pick out of order
+      6. If a ticket is done, move to the next one in sequence
+
+      Reply with:
+      STATUS: done
+      TICKET_ID: AMA-XXX
+      TITLE: What the ticket is about
+      DESCRIPTION: Full description from Linear
+      ACCEPTANCE_CRITERIA: |
+        - Criterion 1
+        - Criterion 2
+    expects: "STATUS: done"
+    max_retries: 1
+    on_fail:
+      escalate_to: human
+
+  - id: develop
+    agent: developer
+    model: anthropic/claude-haiku-4-5-20251001
+    timeoutSeconds: 120
+    input: |
+      Generate and implement {{ticket_id}} ({{title}}).
+
+      TICKET: {{ticket_id}}
+      TITLE: {{title}}
+      DESCRIPTION: {{description}}
+      ACCEPTANCE_CRITERIA:
+      {{acceptance_criteria}}
+
+      Instructions:
+      1. Read examples: api/routers/settings.py, api/routers/follow_along.py, api/routers/sync.py
+      2. Create api/routers/[new_router].py with same patterns
+      3. Wire into backend/main.py _include_routers()
+      4. Create feature branch: git checkout -b feature/{{ticket_id}}-short-name
+      5. Commit and push
+      6. Create PR to main with ticket ID in title
+
+      Use MiniMax-M2.5 for all code generation (highest quality).
+
+      Reply with:
+      STATUS: done
+      ROUTER_FILE: api/routers/...
+      PR_NUMBER: #NNN
+      PR_URL: https://github.com/...
+    expects: "STATUS: done"
+    max_retries: 2
+    on_fail:
+      escalate_to: human
+
+  - id: audit
+    agent: auditor
+    input: |
+      Pre-review {{router_file}} for security + best practices.
+
+      ROUTER: {{router_file}}
+      TICKET: {{ticket_id}}
+      PR: {{pr_url}}
+
+      Task:
+      1. Use DeepSeek to search:
+         - "FastAPI router best practices 2025"
+         - "OWASP top 10 FastAPI vulnerabilities"
+         - "Pydantic validation patterns"
+      2. Read the generated router code
+      3. Check for:
+         - Missing authentication (all endpoints need user dependency)
+         - Missing input validation (Pydantic models, Field constraints)
+         - Error handling (specific exceptions, not bare Exception)
+         - Type safety (proper return types, enums)
+         - Security (no credential leaks, SQL injection risks)
+         - Performance (no N+1, blocking calls, etc.)
+      4. Generate audit report with specific line numbers
+      5. If issues found, output them for developer to fix
+
+      Reply with:
+      STATUS: done
+      AUDIT_RESULT: pass|fail
+      ISSUES: (if any)
+        - Issue 1 (line XXX)
+        - Issue 2 (line YYY)
+      RECOMMENDATIONS:
+        - Fix 1
+        - Fix 2
+
+      Or if critical issues:
+      STATUS: escalate
+      CRITICAL_ISSUES:
+        - Blocker 1
+        - Blocker 2
+    expects: "STATUS: done"
+    on_fail:
+      retry_step: develop
+      max_retries: 1
+
+  - id: wait_review
+    agent: closer
+    input: |
+      Monitor PR {{pr_number}} for Claude code review approval.
+
+      PR: {{pr_number}}
+      URL: {{pr_url}}
+
+      Task:
+      1. Wait for Claude code review to complete
+      2. If approved: reply with STATUS: approved
+      3. If changes requested: wait for developer to fix (they'll push updates)
+      4. Check every 30 seconds for up to 5 minutes
+
+      The auto-merge cron job will handle the actual merge.
+
+      Reply with:
+      STATUS: approved
+      TIMESTAMP: when approved
+    expects: "STATUS: approved"
+    max_retries: 10
+    retry_delay: 30
+    on_fail:
+      escalate_to: human
+
+  - id: post_merge
+    agent: closer
+    input: |
+      {{ticket_id}} PR #{{pr_number}} has been merged. Mark ticket complete.
+
+      TICKET: {{ticket_id}}
+      PR: {{pr_number}}
+
+      Task:
+      1. In Linear, move {{ticket_id}} to "Done"
+      2. Log completion in MEMORY.md
+      3. Next iteration will pick up the next ticket
+
+      Reply with:
+      STATUS: done
+      TICKET: {{ticket_id}}
+      NEXT: auto-pick next ticket
+    expects: "STATUS: done"
+    on_fail:
+      escalate_to: human
+
+steps_flow:
+  - pick_ticket
+  - develop
+  - audit
+  - wait_review
+  - post_merge

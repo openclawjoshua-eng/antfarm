@@ -394,7 +394,7 @@ export function peekStep(agentId: string): PeekResult {
   const row = db.prepare(
     `SELECT COUNT(*) as cnt FROM steps s
      JOIN runs r ON r.id = s.run_id
-     WHERE s.agent_id = ? AND s.status IN ('pending', 'waiting')
+     WHERE s.agent_id = ? AND s.status = 'pending'
        AND r.status = 'running'`
   ).get(agentId) as { cnt: number };
   return row.cnt > 0 ? "HAS_WORK" : "NO_WORK";
@@ -583,9 +583,16 @@ export function completeStep(stepId: string, output: string): { advanced: boolea
 
   if (!step) throw new Error(`Step not found: ${stepId}`);
 
-  // Guard: don't process completions for failed runs
+  // Guard: don't complete a step that's already done (prevents double-advance)
+  const stepCheck = db.prepare("SELECT status FROM steps WHERE id = ?").get(stepId) as { status: string } | undefined;
+  if (stepCheck?.status === "done") {
+    logger.info(`Step already done, ignoring duplicate completion`, { stepId, runId: step.run_id });
+    return { advanced: false, runCompleted: false };
+  }
+
+  // Guard: don't process completions for terminal runs
   const runCheck = db.prepare("SELECT status FROM runs WHERE id = ?").get(step.run_id) as { status: string } | undefined;
-  if (runCheck?.status === "failed") {
+  if (runCheck?.status === "failed" || runCheck?.status === "completed") {
     return { advanced: false, runCompleted: false };
   }
 
@@ -882,8 +889,8 @@ export function failStep(stepId: string, error: string): { retrying: boolean; ru
   const db = getDb();
 
   const step = db.prepare(
-    "SELECT run_id, retry_count, max_retries, type, current_story_id FROM steps WHERE id = ?"
-  ).get(stepId) as { run_id: string; retry_count: number; max_retries: number; type: string; current_story_id: string | null } | undefined;
+    "SELECT run_id, retry_count, max_retries, type, current_story_id, on_fail_config FROM steps WHERE id = ?"
+  ).get(stepId) as { run_id: string; retry_count: number; max_retries: number; type: string; current_story_id: string | null; on_fail_config: string | null } | undefined;
 
   if (!step) throw new Error(`Step not found: ${stepId}`);
 
@@ -920,6 +927,40 @@ export function failStep(stepId: string, error: string): { retrying: boolean; ru
   const newRetryCount = step.retry_count + 1;
 
   if (newRetryCount > step.max_retries) {
+    // Self-retries exhausted — check for cross-step retry (on_fail.retry_step)
+    const onFailConfig = step.on_fail_config ? JSON.parse(step.on_fail_config) as { retry_step?: string; max_retries?: number; on_exhausted?: { escalate_to?: string } } : null;
+
+    if (onFailConfig?.retry_step) {
+      // Find the target step to retry within this run
+      const targetStep = db.prepare(
+        "SELECT id, step_id, retry_count FROM steps WHERE run_id = ? AND step_id = ? LIMIT 1"
+      ).get(step.run_id, onFailConfig.retry_step) as { id: string; step_id: string; retry_count: number } | undefined;
+
+      const crossMaxRetries = onFailConfig.max_retries ?? 2;
+
+      if (targetStep && targetStep.retry_count < crossMaxRetries) {
+        // Reset the current (failed) step back to waiting
+        db.prepare(
+          "UPDATE steps SET status = 'waiting', output = ?, retry_count = 0, updated_at = datetime('now') WHERE id = ?"
+        ).run(error, stepId);
+        // Also reset any steps between target and current back to waiting
+        db.prepare(
+          "UPDATE steps SET status = 'waiting', output = NULL, retry_count = 0, updated_at = datetime('now') WHERE run_id = ? AND step_index > (SELECT step_index FROM steps WHERE id = ?) AND step_index < (SELECT step_index FROM steps WHERE id = ?) AND status = 'done'"
+        ).run(step.run_id, targetStep.id, stepId);
+        // Set target step to pending with incremented retry_count
+        db.prepare(
+          "UPDATE steps SET status = 'pending', retry_count = ?, output = NULL, updated_at = datetime('now') WHERE id = ?"
+        ).run(targetStep.retry_count + 1, targetStep.id);
+
+        const wfId2 = getWorkflowId(step.run_id);
+        emitEvent({ ts: new Date().toISOString(), event: "step.retry_step", runId: step.run_id, workflowId: wfId2, stepId: stepId, detail: `Cross-step retry: resetting to ${onFailConfig.retry_step} (attempt ${targetStep.retry_count + 1}/${crossMaxRetries})` });
+        logger.info(`Cross-step retry: ${stepId} failed, retrying ${onFailConfig.retry_step} (attempt ${targetStep.retry_count + 1}/${crossMaxRetries})`, { runId: step.run_id });
+        return { retrying: true, runFailed: false };
+      }
+
+      // Cross-step retries also exhausted — fail the run
+    }
+
     db.prepare(
       "UPDATE steps SET status = 'failed', output = ?, retry_count = ?, updated_at = datetime('now') WHERE id = ?"
     ).run(error, newRetryCount, stepId);
