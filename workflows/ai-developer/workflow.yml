@@ -8,6 +8,9 @@ description: |
   - Auditor: Pre-reviews with DeepSeek (security + best practices)
   - Closer: Monitors PR status, handles post-merge cleanup
 
+notifications:
+  url: http://127.0.0.1:9876
+
 context:
   repo: supergeri/mapper-api
   linear_project: AMA
