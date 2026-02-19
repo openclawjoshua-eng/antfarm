@@ -36,7 +36,8 @@ async function readOpenClawConfig(): Promise<{
 
 async function getGatewayConfig(): Promise<GatewayConfig> {
   const config = await readOpenClawConfig();
-  const port = config.port ?? 18789;
+  const envPort = Number(process.env.OPENCLAW_GATEWAY_PORT);
+  const port = Number.isFinite(envPort) && envPort > 0 ? envPort : (config.port ?? 18789);
 
   // Compute a unified secret: use password when mode is "password", otherwise use token.
   // The gateway accepts Bearer <secret> for both modes — it just compares against the

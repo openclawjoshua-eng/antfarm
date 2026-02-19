@@ -434,6 +434,7 @@ export function claimStep(agentId: string): ClaimResult {
      JOIN runs r ON r.id = s.run_id
      WHERE s.agent_id = ? AND s.status = 'pending'
        AND r.status NOT IN ('failed', 'cancelled')
+     ORDER BY r.created_at ASC, s.step_index ASC
      LIMIT 1`
   ).get(agentId) as { id: string; step_id: string; run_id: string; input_template: string; type: string; loop_config: string | null } | undefined;
 
@@ -826,8 +827,8 @@ function advancePipeline(runId: string): { advanced: boolean; runCompleted: bool
   }
 
   const next = db.prepare(
-    "SELECT id, step_id FROM steps WHERE run_id = ? AND status = 'waiting' ORDER BY step_index ASC LIMIT 1"
-  ).get(runId) as { id: string; step_id: string } | undefined;
+    "SELECT id, step_id, step_index FROM steps WHERE run_id = ? AND status = 'waiting' ORDER BY step_index ASC LIMIT 1"
+  ).get(runId) as { id: string; step_id: string; step_index: number } | undefined;
 
   const incomplete = db.prepare(
     "SELECT id FROM steps WHERE run_id = ? AND status IN ('failed', 'pending', 'running') LIMIT 1"
@@ -835,6 +836,16 @@ function advancePipeline(runId: string): { advanced: boolean; runCompleted: bool
 
   if (!next && incomplete) {
     return { advanced: false, runCompleted: false };
+  }
+
+  // Guard: don't advance past incomplete earlier steps (prevents skipping failed steps)
+  if (next && incomplete) {
+    const earlierIncomplete = db.prepare(
+      "SELECT id FROM steps WHERE run_id = ? AND status IN ('failed', 'pending', 'running') AND step_index < ? LIMIT 1"
+    ).get(runId, next.step_index) as { id: string } | undefined;
+    if (earlierIncomplete) {
+      return { advanced: false, runCompleted: false };
+    }
   }
 
   const wfId = getWorkflowId(runId);
