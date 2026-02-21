@@ -4,47 +4,26 @@ import { resolveAntfarmCli } from "./paths.js";
 import { getDb } from "../db.js";
 
 const DEFAULT_EVERY_MS = 300_000; // 5 minutes
-const DEFAULT_AGENT_TIMEOUT_SECONDS = 30 * 60; // 30 minutes
+const DEFAULT_POLLING_TIMEOUT_SECONDS = 120; // 2 minutes (Phase 1 is lightweight)
+const DEFAULT_DIRECT_TIMEOUT_SECONDS = 1800; // 30 minutes (single-phase: claim + work)
+const DEFAULT_POLLING_MODEL = "moonshot/kimi-k2.5";
 
-function buildAgentPrompt(workflowId: string, agentId: string): string {
+// ── Phase 2: Work execution prompt (spawned as subagent) ──────────
+function buildWorkPrompt(workflowId: string, agentId: string): string {
   const fullAgentId = `${workflowId}_${agentId}`;
   const cli = resolveAntfarmCli();
 
-  return `You are an Antfarm workflow agent. Check for pending work and execute it.
-
-Step 0 — Concurrency guard (run this FIRST):
-\`\`\`
-LOCK="/tmp/antfarm-${fullAgentId}.lock"
-if [ -f "$LOCK" ] && kill -0 $(cat "$LOCK") 2>/dev/null; then
-  echo "LOCKED: another session (PID $(cat $LOCK)) is still running"
-  exit 0
-fi
-echo $$ > "$LOCK"
-\`\`\`
-If the output says "LOCKED", reply HEARTBEAT_OK and stop immediately. Do NOT proceed.
-When your session ends (after step complete/fail OR after NO_WORK), clean up: rm -f "$LOCK"
-
-Step 1 — Quick check for pending work (lightweight, no side effects):
-\`\`\`
-node ${cli} step peek "${fullAgentId}"
-\`\`\`
-If output is "NO_WORK", clean up the lock file and reply HEARTBEAT_OK and stop immediately. Do NOT run step claim.
-
-Step 2 — If "HAS_WORK", claim the step:
-\`\`\`
-node ${cli} step claim "${fullAgentId}"
-\`\`\`
-If output is "NO_WORK", reply HEARTBEAT_OK and stop.
+  return `You are an Antfarm workflow agent. Execute the pending work below.
 
 ⚠️ CRITICAL: You MUST call "step complete" or "step fail" before ending your session. If you don't, the workflow will be stuck forever. This is non-negotiable.
 
-Step 3 — If JSON is returned, it contains: {"stepId": "...", "runId": "...", "input": "..."}
+The claimed step JSON is at the END of this message. It contains: {"stepId": "...", "runId": "...", "input": "..."}
 Save the stepId — you'll need it to report completion.
 The "input" field contains your FULLY RESOLVED task instructions. Read it carefully and DO the work.
 
-Step 4 — Do the work described in the input. Format your output with KEY: value lines as specified.
+Do the work described in the input. Format your output with KEY: value lines as specified.
 
-Step 5 — MANDATORY: Report completion (do this IMMEDIATELY after finishing the work):
+MANDATORY: Report completion (do this IMMEDIATELY after finishing the work):
 \`\`\`
 node ${cli} step complete "<stepId>" <<'ANTFARM_EOF'
 STATUS: done
@@ -66,30 +45,105 @@ RULES:
 The workflow cannot advance until you report. Your session ending without reporting = broken pipeline.`;
 }
 
+// ── Phase 1: Lightweight polling prompt (cheap model) ─────────────
+function buildPollingPrompt(workflowId: string, agentId: string, workModel?: string): string {
+  const fullAgentId = `${workflowId}_${agentId}`;
+  const cli = resolveAntfarmCli();
+  const model = workModel ?? "anthropic/claude-haiku-4-5-20251001";
+  const workPrompt = buildWorkPrompt(workflowId, agentId);
+
+  return `Check for pending work. Run this command:
+\`\`\`
+node ${cli} step claim "${fullAgentId}"
+\`\`\`
+If output is "NO_WORK", reply HEARTBEAT_OK and stop immediately.
+
+If JSON is returned, you MUST spawn a worker session to handle it. Parse the JSON to confirm it has stepId, runId, and input fields.
+
+Then call the sessions_spawn tool with these EXACT parameters:
+- agentId: "${fullAgentId}"
+- model: "${model}"
+- task: The full work prompt below (between the START/END markers), followed by two newlines, then "CLAIMED STEP JSON:" on its own line, then the EXACT JSON output from step claim.
+
+---START WORK PROMPT---
+${workPrompt}
+---END WORK PROMPT---
+
+After spawning, reply with a short summary of what you dispatched (e.g. "Spawned worker for step <stepId>"). Do NOT attempt to do the work yourself.`;
+}
+
+// ── Single-phase: Direct claim + work in one session ─────────────
+// Used when the agent's work model is the same as the polling model
+// (e.g. Haiku agents like closer, auditor, picker). No spawning needed.
+function buildDirectPrompt(workflowId: string, agentId: string): string {
+  const fullAgentId = `${workflowId}_${agentId}`;
+  const cli = resolveAntfarmCli();
+
+  return `You are an Antfarm workflow agent. Check for work and execute it directly.
+
+Step 1: Check for pending work:
+\`\`\`
+node ${cli} step claim "${fullAgentId}"
+\`\`\`
+If output is "NO_WORK", reply HEARTBEAT_OK and stop immediately. Do NOTHING else.
+
+Step 2: If JSON is returned, it contains {"stepId": "...", "runId": "...", "input": "..."}.
+Save the stepId. Read the "input" field — it contains your task instructions. Do the work.
+
+Step 3: Report completion (MANDATORY — do this IMMEDIATELY after finishing):
+\`\`\`
+node ${cli} step complete "<stepId>" <<'ANTFARM_EOF'
+STATUS: done
+CHANGES: what you did
+ANTFARM_EOF
+\`\`\`
+
+If the work FAILED:
+\`\`\`
+node ${cli} step fail "<stepId>" "description of what went wrong"
+\`\`\`
+
+RULES:
+1. NEVER end your session without calling step complete or step fail (unless NO_WORK)
+2. Pipe output via heredoc to stdin
+3. If unsure whether to complete or fail, call step fail with an explanation
+4. The workflow CANNOT advance until you report. Ending without reporting = broken pipeline.`;
+}
+
 export async function setupAgentCrons(workflow: WorkflowSpec): Promise<void> {
   const agents = workflow.agents;
   // Allow per-workflow cron interval via cron.interval_ms in workflow.yml
   const everyMs = (workflow as any).cron?.interval_ms ?? DEFAULT_EVERY_MS;
-  const workflowTimeout = (workflow as any).cron?.timeout_seconds ?? DEFAULT_AGENT_TIMEOUT_SECONDS;
+
+  // Two-phase polling: Phase 1 uses cheap model + short timeout
+  const workflowPollingModel = workflow.polling?.model ?? DEFAULT_POLLING_MODEL;
+  const workflowPollingTimeout = workflow.polling?.timeoutSeconds ?? DEFAULT_POLLING_TIMEOUT_SECONDS;
 
   for (let i = 0; i < agents.length; i++) {
     const agent = agents[i];
-    const anchorMs = Date.now(); // all agents share same anchor; scheduler handles concurrent due jobs
+    const anchorMs = i * 60_000; // stagger agents by 1 minute each
     const cronName = `antfarm/${workflow.id}/${agent.id}`;
     const agentId = `${workflow.id}_${agent.id}`;
 
-    // Single-phase: agent's own model does peek → claim → work → complete.
-    // Prompt starts with a cheap `step peek`; if NO_WORK the session ends
-    // immediately with minimal token usage.
-    const prompt = buildAgentPrompt(workflow.id, agent.id);
-    const timeoutSeconds = workflowTimeout;
+    const pollingModel = agent.pollingModel ?? workflowPollingModel;
+    const workModel = agent.model;
+
+    // If work model == polling model, use single-phase (direct) mode.
+    // No point spawning a subagent with the same model — just do the work.
+    const useDirectMode = workModel === pollingModel;
+    const prompt = useDirectMode
+      ? buildDirectPrompt(workflow.id, agent.id)
+      : buildPollingPrompt(workflow.id, agent.id, workModel);
+    const timeoutSeconds = useDirectMode
+      ? ((workflow as any).cron?.timeout_seconds ?? DEFAULT_DIRECT_TIMEOUT_SECONDS)
+      : workflowPollingTimeout;
 
     const result = await createAgentCronJob({
       name: cronName,
       schedule: { kind: "every", everyMs, anchorMs },
       sessionTarget: "isolated",
       agentId,
-      payload: { kind: "agentTurn", message: prompt, timeoutSeconds },
+      payload: { kind: "agentTurn", message: prompt, model: pollingModel, timeoutSeconds },
       delivery: { mode: "none" },
       enabled: true,
     });

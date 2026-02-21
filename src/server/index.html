@@ -210,6 +210,7 @@ select:focus{outline:none;border-color:#8ECFC0}
 <header>
   <h1><span>antfarm</span> dashboard</h1>
   <select id="wf-select"><option value="">Loading...</option></select>
+  <button class="theme-toggle" id="hide-finished-btn" onclick="toggleHideFinished()" title="Hide completed/cancelled/failed runs">Hide Finished</button>
   <button class="theme-toggle" id="theme-toggle" title="Toggle light/dark mode" aria-label="Toggle light/dark mode">☀️</button>
   <div class="medic-badge" id="medic-badge" onclick="toggleMedicPanel()" title="Medic watchdog status">
     <span class="medic-dot unknown" id="medic-dot"></span>
@@ -232,6 +233,27 @@ let workflows = [];
 let currentWf = null;
 let currentRunId = null;
 let panelRefreshInterval = null;
+let hideFinished = localStorage.getItem('antfarm-hide-finished') === 'true';
+
+function toggleHideFinished() {
+  hideFinished = !hideFinished;
+  localStorage.setItem('antfarm-hide-finished', hideFinished);
+  updateHideFinishedBtn();
+  if (currentWf) loadRuns();
+}
+
+function updateHideFinishedBtn() {
+  const btn = document.getElementById('hide-finished-btn');
+  if (hideFinished) {
+    btn.textContent = 'Show All';
+    btn.style.background = 'rgba(255,255,255,0.2)';
+    btn.style.borderColor = 'rgba(255,255,255,0.6)';
+  } else {
+    btn.textContent = 'Hide Finished';
+    btn.style.background = '';
+    btn.style.borderColor = '';
+  }
+}
 
 async function fetchJSON(url) {
   const r = await fetch(API + url);
@@ -280,6 +302,9 @@ function renderBoard(wf, runs) {
   const board = document.getElementById('board');
   const columns = {};
   wf.steps.forEach(s => { columns[s.id] = []; });
+
+  const FINISHED = new Set(['completed', 'cancelled', 'failed', 'error']);
+  if (hideFinished) runs = runs.filter(r => !FINISHED.has(r.status));
 
   runs.forEach(run => {
     const stepId = getActiveStepId(run);
@@ -478,6 +503,7 @@ async function loadStories(runId) {
 }
 
 document.getElementById('wf-select').addEventListener('change', e => selectWorkflow(e.target.value));
+updateHideFinishedBtn();
 loadWorkflows();
 setInterval(() => { if (currentWf) loadRuns(); }, 30000);
 

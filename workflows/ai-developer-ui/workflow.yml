@@ -1,9 +1,10 @@
-id: ai-developer
-name: AI Developer Workflow
-version: 6
+id: ai-developer-ui
+name: AI Developer Workflow (UI)
+version: 1
 description: |
-  Hybrid 7-step AI developer pipeline.
-  - Ticket Picker: Picks next Linear ticket from project backlog
+  7-step AI developer pipeline for amakaflow-ui (TypeScript/React).
+  Uses Kimi K2.5 as the developer model.
+  - Ticket Picker: Picks next Linear ticket scoped to amakaflow-ui
   - Developer: Implements code + commits to branch (NO PR)
   - Developer: Runs tests on the branch (retries develop on failure)
   - Auditor: Reviews code on branch for security + best practices
@@ -15,7 +16,7 @@ notifications:
   url: http://127.0.0.1:9876
 
 context:
-  repo: supergeri/mapper-api
+  repo: supergeri/amakaflow-ui
   linear_project: AMA
   linear_team: MyAmaka
 
@@ -31,7 +32,7 @@ agents:
     name: Ticket Picker
     role: analysis
     model: moonshot/kimi-k2.5
-    description: Picks next ready Linear ticket from project backlog
+    description: Picks next ready Linear ticket scoped to amakaflow-ui
     workspace:
       baseDir: agents/picker
       files:
@@ -40,8 +41,8 @@ agents:
   - id: developer
     name: Developer
     role: coding
-    model: minimax/MiniMax-M2.5-highspeed
-    description: Implements ticket code with MiniMax-M2.5
+    model: moonshot/kimi-k2.5
+    description: Implements ticket code with Kimi K2.5
     workspace:
       baseDir: agents/developer
       files:
@@ -71,24 +72,6 @@ steps:
   - id: pick_ticket
     agent: picker
     input: |
-      🚨 CRITICAL: OUTPUT FORMAT REQUIREMENTS (READ THIS FIRST) 🚨
-
-      Your response MUST end with EXACTLY these keys on separate lines — plain text, no markdown:
-
-      STATUS: done
-      TICKET_ID: AMA-607
-      TITLE: the ticket title here
-      DESCRIPTION: the full description here
-      ACCEPTANCE_CRITERIA: |
-        - Criterion 1
-        - Criterion 2
-
-      ❌ Do NOT use markdown headers, JSON, bullet lists, or any other format.
-      ❌ Do NOT omit any key. Missing keys will BREAK the pipeline.
-      ✅ Each key must be on its own line followed by a colon and a space.
-
-      ═══════════════════════════════════════════════════════════════════════
-
       TASK: "{{task}}"
 
       ⚠️ CRITICAL RULE — READ THIS FIRST:
@@ -115,39 +98,21 @@ steps:
       1. Query Linear for issues in the {{linear_team}} team where:
          - Status is "Todo", "In Progress", or "Ready"
          - Not blocked by unfinished dependencies
+         - The ticket is for the amakaflow-ui frontend (TypeScript/React/Next.js)
+           Look for: .tsx, .ts files, React components, Next.js pages, UI features,
+           frontend routing, CSS/styling, or explicit mention of amakaflow-ui in the description.
+           SKIP tickets for: mapper-api (Python/FastAPI), workout-ingestor-api, chat-api,
+           amakaflow-automation (Maestro), or amakaflow-android-app (Kotlin/Android).
       2. SKIP these ticket types (they are not coding tasks):
          - Tickets with "SPIKE" in the title (research/planning tasks)
          - Tickets with "SPIKE" label
          - Tickets that are purely documentation or research with no code changes
       3. Sort by priority (Urgent > High > Medium > Low > No priority)
-      4. Pick the highest-priority unblocked CODING ticket that has NO existing open PR
+      4. Pick the highest-priority unblocked CODING ticket for amakaflow-ui that has NO existing open PR
       5. Get full ticket details: title, description, acceptance criteria
       6. If no tickets are ready (or all have existing PRs), reply with STATUS: no_work
 
-      After selecting a ticket, BEFORE returning output:
-      7. Check the ticket description for these two required CI fields:
-         - "## Repo:" line (e.g. "## Repo: supergeri/amakaflow-android-app")
-         - "## Test command:" line (e.g. "## Test command: ./gradlew :app:testDebugUnitTest")
-         If EITHER is missing, patch the Linear ticket description via GraphQL mutation to add them
-         at the top of the description. Use the repo you've identified from the ticket content.
-         Repo mapping:
-           - Python/FastAPI (mapper, workouts) → supergeri/mapper-api
-           - TypeScript/React (.tsx) → supergeri/amakaflow-ui
-           - Workout ingestion → supergeri/workout-ingestor-api
-           - Chat/AI service → supergeri/chat-api
-           - Android (Kotlin, .kt, Compose) → supergeri/amakaflow-android-app
-           - Maestro/e2e tests → supergeri/amakaflow-automation
-         Test command mapping:
-           - Android → ./gradlew :app:testDebugUnitTest
-           - Python → pytest
-           - TypeScript/React → npm test
-           - Other → npm test
-         Use this mutation (replace ISSUE_ID and NEW_DESCRIPTION):
-           mutation { issueUpdate(id: "ISSUE_ID", input: { description: "NEW_DESCRIPTION" }) { success } }
-         Return the PATCHED description in your DESCRIPTION output key.
-
-      🚨 REMINDER: MANDATORY OUTPUT FORMAT 🚨
-
+      Reply with EXACTLY this format:
       STATUS: done
       TICKET_ID: <the ticket ID, e.g. AMA-607>
       TITLE: <ticket title>
@@ -155,8 +120,6 @@ steps:
       ACCEPTANCE_CRITERIA: |
         - Criterion 1
         - Criterion 2
-
-      Plain text only. No markdown. No JSON. Every key required.
     expects: "STATUS: done"
     max_retries: 1
     on_fail:
@@ -173,7 +136,7 @@ steps:
       STATUS: done
       BRANCH_NAME: feature/AMA-607-short-name
       CHANGED_FILES: file1.ts, file2.ts
-      REPO_NAME: supergeri/mapper-api
+      REPO_NAME: supergeri/amakaflow-ui
 
       ❌ WRONG key names that will BREAK the system:
       - CHANGES: (wrong — must be CHANGED_FILES)
@@ -187,7 +150,7 @@ steps:
       STATUS: done
       BRANCH_NAME: feature/AMA-607-element-highlight
       CHANGED_FILES: src/components/OutlinePulse.tsx, src/types/highlight.ts, tests/OutlinePulse.test.tsx
-      REPO_NAME: supergeri/mapper-api
+      REPO_NAME: supergeri/amakaflow-ui
 
       ALL FOUR KEYS ARE MANDATORY. Missing any key will cause pipeline failure.
       🚫 Do NOT create a Pull Request. Just commit and push the branch.
@@ -196,46 +159,25 @@ steps:
 
       Implement {{ticket_id}} ({{title}}).
 
-      DEFAULT_REPO: {{repo}}
+      REPO: supergeri/amakaflow-ui
       TICKET: {{ticket_id}}
       TITLE: {{title}}
       DESCRIPTION: {{description}}
       ACCEPTANCE_CRITERIA:
       {{acceptance_criteria}}
 
-      ⚠️ REPO SELECTION: Read the ticket description carefully to determine the correct repo.
-      The ticket title, description, and file paths tell you which repo to use.
-      For the supergeri org:
-        - Python/FastAPI backend (mapper, workouts, users) → supergeri/mapper-api
-        - TypeScript/React frontend (.tsx, .ts, React components) → supergeri/amakaflow-ui
-        - Workout ingestion service (prompts, ingestor) → supergeri/workout-ingestor-api
-        - Chat/AI service (chat history, tool calls, streaming) → supergeri/chat-api
-        - Maestro test automation (yaml flows, replay, e2e tests) → supergeri/amakaflow-automation
-        - Android app (Kotlin, Compose, Gradle, .kt files) → supergeri/amakaflow-android-app
-      If unsure, check the ticket description for repo names, file paths, or service names.
-      Use the correct repo for cloning. Report which repo you used in REPO_NAME output.
-
       Instructions:
-      1. Clone the correct repo fresh (clean slate for retries):
+      1. Clone the repo fresh (clean slate for retries):
          rm -rf /tmp/{{ticket_id}}-work
-         git clone https://github.com/<correct-repo>.git /tmp/{{ticket_id}}-work
+         git clone https://github.com/supergeri/amakaflow-ui.git /tmp/{{ticket_id}}-work
          cd /tmp/{{ticket_id}}-work && git checkout main && git pull origin main
       2. Create feature branch FROM latest main (use -B to force-create even if it exists):
          git checkout -B feature/{{ticket_id}}-short-name
       3. Read existing code to understand patterns and style
       4. Implement the changes per the acceptance criteria
-      5. Run any available tests to verify your code works BEFORE pushing:
-         - Android/Kotlin (build.gradle or build.gradle.kts exists):
-           Run unit tests locally — JDK 17 and Android SDK are available on this machine:
-             export ANDROID_HOME=~/Library/Android/sdk
-             ./gradlew :app:testDebugUnitTest 2>&1 | tail -150
-           This takes ~2-3 minutes. Read the output carefully.
-           If ANY test FAILS: fix every failure before pushing. Do NOT push failing tests.
-           Never push to GitHub and rely on CI to catch test failures — this wastes money.
-           Only skip if gradlew itself won't start (true missing JDK/SDK — log the error).
-         - For TypeScript/JS: npm test or npx vitest run or npx jest
-         - For Python: pytest tests/ -v --tb=short
-         - If tests fail, fix the code until they pass
+      5. Run tests to verify your code works:
+         npm test || npx vitest run || npx jest
+         If tests fail, fix the code until they pass
       6. Commit all changes with a clear message referencing {{ticket_id}}
       7. MANDATORY VALIDATION before pushing:
          git rev-list --count main..HEAD
@@ -258,12 +200,12 @@ steps:
       STATUS: done
       BRANCH_NAME: feature/{{ticket_id}}-short-name
       CHANGED_FILES: file1.ts, file2.ts, file3.ts
-      REPO_NAME: owner/repo-name
+      REPO_NAME: supergeri/amakaflow-ui
 
       - STATUS must be "done"
       - BRANCH_NAME must be the exact git branch name you pushed
       - CHANGED_FILES must list all modified files (comma-separated)
-      - REPO_NAME must be the GitHub owner/repo you pushed to (e.g. supergeri/mapper-api)
+      - REPO_NAME must be supergeri/amakaflow-ui
 
       DO NOT use any other key names. DO NOT add extra keys. DO NOT omit any keys.
       DO NOT create a Pull Request.
@@ -289,45 +231,28 @@ steps:
       Run the test suite for {{ticket_id}} on branch {{branch_name}}.
 
       BRANCH: {{branch_name}}
-      REPO: {{repo_name}}
+      REPO: supergeri/amakaflow-ui
       REPO_FALLBACK: {{repo}}
       TICKET: {{ticket_id}}
 
-      ⚠️ FALLBACK: If BRANCH or REPO contain "[missing:" values, discover them:
-        1. Determine the actual repo: use REPO value. If it contains "[missing:", use REPO_FALLBACK.
-        2. Discover the branch:
-           git ls-remote --heads https://github.com/<repo>.git "refs/heads/feature/{{ticket_id}}*"
-           Use the first matching branch name.
+      ⚠️ FALLBACK: If BRANCH contains "[missing:" values, discover it:
+        git ls-remote --heads https://github.com/supergeri/amakaflow-ui.git "refs/heads/feature/{{ticket_id}}*"
+        Use the first matching branch name.
 
       Task:
       1. Check out the branch:
          cd /tmp/{{ticket_id}}-work && git checkout {{branch_name}} && git pull origin {{branch_name}}
          OR if directory doesn't exist:
-         git clone https://github.com/<repo>.git /tmp/{{ticket_id}}-work
+         git clone https://github.com/supergeri/amakaflow-ui.git /tmp/{{ticket_id}}-work
          cd /tmp/{{ticket_id}}-work && git checkout {{branch_name}}
 
-      2. ANDROID/KOTLIN CHECK — before running anything, check if this is an Android project:
-         ls build.gradle build.gradle.kts settings.gradle settings.gradle.kts 2>/dev/null
-         If ANY of these files exist, this is an Android/Kotlin project.
-         Android projects require JDK 17 + Gradle which is NOT available in this environment.
-         → Skip local tests entirely. Reply immediately:
-           STATUS: done
-           TESTS_PASSED: true
-           TEST_OUTPUT: Android/Kotlin project — local Gradle tests skipped (no JDK in agent environment). CI will run ./gradlew testDebugUnitTest on the PR.
+      2. Install dependencies if needed:
+         npm install (or npm ci if lock file exists)
 
-      3. Install dependencies if needed (non-Android only):
-         - If package.json exists: npm install (or npm ci if lock file exists)
-         - If requirements.txt exists: pip install -r requirements.txt
-         - If pyproject.toml exists: pip install -e ".[dev]" or pip install -e .
+      3. Run tests:
+         npm test || npx vitest run || npx jest
 
-      4. Detect project type and run tests (non-Android only):
-         - TypeScript/JavaScript (package.json exists):
-           npm test || npx vitest run || npx jest
-         - Python (pytest.ini, pyproject.toml, or tests/ directory exists):
-           pytest tests/ -v --tb=short
-         - If no test runner found, check for any test files and report
-
-      5. Capture the full test output (pass/fail counts, error messages).
+      4. Capture the full test output (pass/fail counts, error messages).
 
       ═══════════════════════════════════════════════════════════════════════
 
@@ -358,25 +283,20 @@ steps:
       Review the code changes on branch {{branch_name}} for {{ticket_id}}.
 
       BRANCH: {{branch_name}}
-      REPO: {{repo_name}}
+      REPO: supergeri/amakaflow-ui
       REPO_FALLBACK: {{repo}}
       TICKET: {{ticket_id}}
       CHANGED_FILES: {{changed_files}}
 
       ⚠️ There is NO Pull Request yet. Review the branch directly.
 
-      ⚠️ FALLBACK: If BRANCH or REPO contain "[missing:" values, discover them:
-        1. Determine the actual repo: use REPO value. If it contains "[missing:", use REPO_FALLBACK.
-        2. Discover the branch:
-           git ls-remote --heads https://github.com/<repo>.git "refs/heads/feature/{{ticket_id}}*"
-           Use the first matching branch name.
-        3. If no branch found in the primary repo, also check other repos:
-           gh search repos "{{ticket_id}}" --owner supergeri --json fullName
-           Then search each for the branch.
+      ⚠️ FALLBACK: If BRANCH contains "[missing:" values, discover it:
+        git ls-remote --heads https://github.com/supergeri/amakaflow-ui.git "refs/heads/feature/{{ticket_id}}*"
+        Use the first matching branch name.
 
       Task:
-      1. Clone/checkout the branch (use discovered repo and branch if needed):
-         git clone https://github.com/<repo>.git /tmp/{{ticket_id}}-audit || true
+      1. Clone/checkout the branch:
+         git clone https://github.com/supergeri/amakaflow-ui.git /tmp/{{ticket_id}}-audit || true
          cd /tmp/{{ticket_id}}-audit
          git fetch origin <branch>
          git checkout <branch>
@@ -388,8 +308,8 @@ steps:
          - Security issues (injection, auth bypass, credential leaks)
          - Missing input validation
          - Error handling (specific exceptions, not bare catch-all)
-         - Type safety
-         - Performance concerns (N+1, blocking calls, etc.)
+         - Type safety (TypeScript types correct, no any casts)
+         - Performance concerns (unnecessary re-renders, missing memo/callback)
          - Code style consistency with the rest of the codebase
 
       4. Generate audit report with specific file paths and line numbers
@@ -435,38 +355,36 @@ steps:
       Fix any audit issues on branch {{branch_name}} for {{ticket_id}}, then create a PR.
 
       BRANCH: {{branch_name}}
-      REPO: {{repo_name}}
+      REPO: supergeri/amakaflow-ui
       REPO_FALLBACK: {{repo}}
       TICKET: {{ticket_id}}
       AUDIT_RESULT: {{audit_result}}
       ISSUES: {{issues}}
       RECOMMENDATIONS: {{recommendations}}
 
-      ⚠️ FALLBACK: If BRANCH or REPO contain "[missing:" values, discover them:
-        1. Determine the actual repo: use REPO value. If it contains "[missing:", use REPO_FALLBACK.
-        2. Discover the branch:
-           git ls-remote --heads https://github.com/<repo>.git "refs/heads/feature/{{ticket_id}}*"
+      ⚠️ FALLBACK: If BRANCH contains "[missing:" values, discover it:
+        git ls-remote --heads https://github.com/supergeri/amakaflow-ui.git "refs/heads/feature/{{ticket_id}}*"
 
       Task:
-      1. Check out the branch (use discovered repo and branch if needed):
+      1. Check out the branch:
          cd /tmp/{{ticket_id}}-work && git checkout <branch> && git pull origin <branch>
          OR if directory doesn't exist:
-         git clone https://github.com/<repo>.git /tmp/{{ticket_id}}-work
+         git clone https://github.com/supergeri/amakaflow-ui.git /tmp/{{ticket_id}}-work
          cd /tmp/{{ticket_id}}-work && git checkout <branch>
 
       1b. CHECK FOR EXISTING PR WITH ISSUES (this step may be retried after merge failure):
          - Check if a PR already exists for this branch:
-           gh pr list --repo <repo> --head <branch> --state open --json number,url,statusCheckRollup,reviews
+           gh pr list --repo supergeri/amakaflow-ui --head <branch> --state open --json number,url,statusCheckRollup,reviews
          - If a PR exists, ALWAYS check for BOTH CI failures AND CHANGES_REQUESTED reviews:
            a. Get full details:
-              gh pr view <pr_number> --repo <repo> --json reviews,statusCheckRollup \
+              gh pr view <pr_number> --repo supergeri/amakaflow-ui --json reviews,statusCheckRollup \
                 --jq '{blocking_reviews: [.reviews[] | select(.state == "CHANGES_REQUESTED") | {author: .author.login, body: .body}], failed_checks: [.statusCheckRollup[] | select(.conclusion == "FAILURE") | .name]}'
            b. Read all inline PR review comments:
-              gh api repos/<repo>/pulls/<pr_number>/comments --jq '[.[] | {body: .body, path: .path, line: .original_line}]'
+              gh api repos/supergeri/amakaflow-ui/pulls/<pr_number>/comments --jq '[.[] | {body: .body, path: .path, line: .original_line}]'
            c. If CHANGES_REQUESTED reviews exist OR CI failures exist:
               - Read EVERY review body and inline comment carefully
               - Fix ALL issues mentioned (review feedback AND CI failures)
-              - Run tests locally to verify fixes: pytest tests/ -v --tb=short
+              - Run tests locally to verify fixes: npm test || npx vitest run
               - Commit: git commit -am "fix: address code review feedback for {{ticket_id}}"
               - Push: git push origin <branch>
            d. Skip to step 5 (PR already exists, just report its number/URL)
@@ -476,13 +394,13 @@ steps:
       3. If AUDIT_RESULT is "fail":
          - Read the ISSUES and RECOMMENDATIONS carefully
          - Fix each issue in the code
-         - Run tests to make sure fixes don't break anything
+         - Run tests to make sure fixes don't break anything: npm test || npx vitest run
          - Commit fixes: git commit -am "fix: address audit feedback for {{ticket_id}}"
          - Push: git push origin <branch>
 
       3b. REBASE CHECK — before creating the PR, ensure the branch is up to date with main:
          a. Check how far behind main the branch is:
-            gh api repos/<repo>/compare/main...<branch> --jq .behind_by
+            gh api repos/supergeri/amakaflow-ui/compare/main...<branch> --jq .behind_by
          b. If behind_by > 0:
             git fetch origin main
             git rebase origin/main
@@ -493,7 +411,7 @@ steps:
          c. If behind_by == 0: continue to step 4
 
       4. Create a Pull Request to main:
-         gh pr create --repo <repo> --base main --head <branch> \
+         gh pr create --repo supergeri/amakaflow-ui --base main --head <branch> \
            --title "{{ticket_id}}: {{title}}" \
            --body "Implements {{ticket_id}} — {{title}}"
 
@@ -505,7 +423,7 @@ steps:
 
       STATUS: done
       PR_NUMBER: #<number>
-      PR_URL: https://github.com/<repo>/pull/<number>
+      PR_URL: https://github.com/supergeri/amakaflow-ui/pull/<number>
 
       - STATUS must be "done"
       - PR_NUMBER must start with # followed by the number
@@ -524,7 +442,7 @@ steps:
 
       PR: {{pr_number}}
       URL: {{pr_url}}
-      REPO: {{repo_name}}
+      REPO: supergeri/amakaflow-ui
       REPO_FALLBACK: {{repo}}
       TICKET: {{ticket_id}}
 
@@ -532,35 +450,33 @@ steps:
       🚨 ABSOLUTE RULE: Do NOT fabricate, guess, or invent a merge SHA. You MUST get it from the GitHub API.
 
       ⚠️ FALLBACK: If PR or URL contain "[missing:" values, discover the PR:
-        1. Determine the actual repo: use REPO value. If it contains "[missing:", use REPO_FALLBACK.
-        2. Find the open PR for this ticket:
-           gh pr list --repo <repo> --state open --json number,url,headRefName \
+        1. Find the open PR for this ticket:
+           gh pr list --repo supergeri/amakaflow-ui --state open --json number,url,headRefName \
              --jq '.[] | select(.headRefName | contains("{{ticket_id}}"))'
-        3. If NO open PR is found, check for a closed PR with real work on the branch:
+        2. If NO open PR is found, check for a closed PR with real work on the branch:
            a. Find the closed PR:
-              gh pr list --repo <repo> --state closed --json number,url,headRefName \
+              gh pr list --repo supergeri/amakaflow-ui --state closed --json number,url,headRefName \
                 --jq '.[] | select(.headRefName | contains("{{ticket_id}}"))'
            b. If a closed PR exists, check if the branch still has commits above main:
-              gh api repos/<repo>/compare/main...<branch-name> --jq .ahead_by
+              gh api repos/supergeri/amakaflow-ui/compare/main...<branch-name> --jq .ahead_by
            c. If ahead_by > 0, the branch has real work — reopen the PR:
-              gh pr reopen <pr_number> --repo <repo>
+              gh pr reopen <pr_number> --repo supergeri/amakaflow-ui
               Then use this PR for all subsequent steps.
            d. If ahead_by == 0, the branch is empty — reply STATUS: escalate with REASON: branch has no commits above main.
-        4. Use the discovered (or reopened) PR number and URL for all subsequent commands.
 
       Task:
       1. Check that CI checks have passed (ONE check, no polling):
-         gh pr checks <pr_number> --repo <repo>
+         gh pr checks <pr_number> --repo supergeri/amakaflow-ui
          If checks are still running, wait up to 60 seconds checking every 10 seconds.
          If checks fail, reply STATUS: escalate with details.
 
       1b. CHECK FOR BLOCKING REVIEWS before attempting merge:
-         gh pr view <pr_number> --repo <repo> --json reviews,mergeStateStatus \
+         gh pr view <pr_number> --repo supergeri/amakaflow-ui --json reviews,mergeStateStatus \
            --jq '{status: .mergeStateStatus, blocking: [.reviews[] | select(.state == "CHANGES_REQUESTED") | {author: .author.login, body: .body}]}'
          If CHANGES_REQUESTED reviews are present:
            - Collect the full review feedback text from each blocking review
            - Post a comment on the PR to notify Joshua:
-             gh pr comment <pr_number> --repo <repo> --body "⚠️ **Automated merge blocked — action required**\n\nThis PR cannot be merged because a code review has requested changes.\n\n**Review feedback:**\n$(review body text here)\n\n**Joshua**: Please review the feedback above. If the automated fix attempts are exhausted, manual intervention is needed. Re-push the branch after fixing to re-trigger the pipeline."
+             gh pr comment <pr_number> --repo supergeri/amakaflow-ui --body "⚠️ **Automated merge blocked — action required**\n\nThis PR cannot be merged because a code review has requested changes.\n\n**Review feedback:**\n$(review body text here)\n\n**Joshua**: Please review the feedback above. If the automated fix attempts are exhausted, manual intervention is needed. Re-push the branch after fixing to re-trigger the pipeline."
            - Then reply immediately:
              STATUS: escalate
              REASON: CHANGES_REQUESTED — code review feedback must be addressed before merging
@@ -569,21 +485,21 @@ steps:
              PR_URL: <pr_url>
 
       2. Check if the PR is mergeable:
-         gh pr view <pr_number> --repo <repo> --json mergeable,mergeStateStatus
+         gh pr view <pr_number> --repo supergeri/amakaflow-ui --json mergeable,mergeStateStatus
 
       3. If mergeable: merge with squash:
-         gh pr merge <pr_number> --repo <repo> --squash --delete-branch
+         gh pr merge <pr_number> --repo supergeri/amakaflow-ui --squash --delete-branch
          IMPORTANT: Check the exit code. If the command fails, do NOT proceed — report STATUS: escalate.
 
       4. If NOT mergeable (conflicts with main): attempt rebase:
-         a. cd /tmp/{{ticket_id}}-work || git clone https://github.com/<repo>.git /tmp/{{ticket_id}}-work
+         a. cd /tmp/{{ticket_id}}-work || git clone https://github.com/supergeri/amakaflow-ui.git /tmp/{{ticket_id}}-work
          b. cd /tmp/{{ticket_id}}-work && git checkout <branch> && git fetch origin main
          c. git rebase origin/main
          d. If rebase succeeds: git push --force-with-lease, then try merge again
          e. If rebase fails: git rebase --abort, then reply STATUS: escalate
 
       5. MANDATORY VERIFICATION — Do NOT skip this step:
-         gh pr view <pr_number> --repo <repo> --json state,mergeCommit --jq '{state: .state, sha: .mergeCommit.oid}'
+         gh pr view <pr_number> --repo supergeri/amakaflow-ui --json state,mergeCommit --jq '{state: .state, sha: .mergeCommit.oid}'
          - If state is "MERGED": extract the sha. This is your MERGE_SHA.
          - If state is NOT "MERGED": reply STATUS: escalate.
          - If sha is null or empty: reply STATUS: escalate.
@@ -610,27 +526,21 @@ steps:
       Verify merge and clean up for {{ticket_id}}.
 
       TICKET: {{ticket_id}}
-      REPO: {{repo_name}}
-      REPO_FALLBACK: {{repo}}
+      REPO: supergeri/amakaflow-ui
       MERGE_SHA: {{merge_sha}}
 
       ⚠️ CRITICAL: Do NOT use sleep, wait, or polling loops. Check ONCE and return immediately.
 
-      ⚠️ FALLBACK: If REPO contains "[missing:", use REPO_FALLBACK.
-
       Task:
       0. MANDATORY FIRST CHECK — verify the PR is actually merged (prevent false positives):
-         gh pr view <pr_number_or_discover_it> --repo <repo> --json state,mergeCommit \
-           --jq '{state: .state, sha: .mergeCommit.oid}'
-         ⚠️ FALLBACK: If PR number is unknown, discover it:
-           gh pr list --repo <repo> --state all --search "{{ticket_id}}" --json number,state,mergeCommit \
-             --jq '.[] | {number, state, sha: .mergeCommit.oid}'
+         gh pr list --repo supergeri/amakaflow-ui --state all --search "{{ticket_id}}" --json number,state,mergeCommit \
+           --jq '.[] | {number, state, sha: .mergeCommit.oid}'
          - If state is NOT "MERGED": reply STATUS: escalate with REASON: PR is still open — merge did not complete
          - If state is "MERGED" but sha is null/empty: reply STATUS: escalate with REASON: PR merged but no commit SHA found
          - Only proceed if state == "MERGED" AND sha is present
 
       1. Verify the merge commit exists on main:
-         gh api repos/<repo>/commits/{{merge_sha}} --jq '.sha' 2>/dev/null
+         gh api repos/supergeri/amakaflow-ui/commits/{{merge_sha}} --jq '.sha' 2>/dev/null
          If MERGE_SHA contains "[missing:", use the sha discovered in step 0 above.
 
       2. Clean up work directories:
