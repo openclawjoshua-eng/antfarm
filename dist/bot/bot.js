@@ -71,7 +71,8 @@ function formatActiveRuns(runs) {
         const step = r.current_step ?? "unknown step";
         const agent = r.current_agent ?? "";
         const mins = Math.round((Date.now() - new Date(r.updated_at).getTime()) / 60000);
-        return `${num} ${ticket}: ${step}${agent ? ` (${agent})` : ""} — ${mins}m ago`;
+        const stepStatus = r.step_status ?? "";
+        return `${ticket}: ${step} [${stepStatus}] — ${mins}m ago`;
     });
     return `Active runs (${runs.length}):\n${lines.join("\n")}`;
 }
@@ -91,9 +92,9 @@ export async function handleMessage(ctx) {
                     await ctx.reply(`No run found matching "${params.query}"`);
                     break;
                 }
-                const num = detail.run_number != null ? `#${detail.run_number}` : detail.id.slice(0, 8);
+                const ticketId = detail.task.match(/[A-Z]+-\d+/)?.[0] ?? detail.task.slice(0, 30);
                 const steps = detail.steps.map((s) => `  [${s.status.padEnd(7)}] ${s.step_id}`).join("\n");
-                await ctx.reply(`Run ${num}: ${detail.task}\nStatus: ${detail.status}\n\nSteps:\n${steps}`);
+                await ctx.reply(`${ticketId}\nStatus: ${detail.status}\n\nSteps:\n${steps}`);
                 break;
             }
             case "failed_recent": {
