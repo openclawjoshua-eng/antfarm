@@ -1,5 +1,4 @@
 import { Bot, BotError, type Context } from "grammy";
-import Anthropic from "@anthropic-ai/sdk";
 import {
   getActiveRuns, getRecentFailures, getRunDetail,
   startRun, cancelRun, retryStep, kickCrons,
@@ -9,46 +8,83 @@ import {
   getBacklogTickets, getTicket, updateTicketState, assignTicket,
 } from "./linear.js";
 
-const INTENT_SYSTEM = `You are an intent classifier for the Antfarm CI/CD control bot.
-Classify the user message into one of these intents and extract parameters as JSON.
-
-Intents:
-- status_all         — "what's running?", "show runs", "status"
-- status_run         — "status of AMA-123" → { query: "AMA-123" }
-- failed_recent      — "what failed?", "recent failures"
-- start_run          — "start AMA-456" → { ticket: "AMA-456" }
-- cancel_run         — "cancel AMA-123" → { query: "AMA-123" }
-- retry_step         — "retry develop for AMA-123" → { query: "AMA-123", step: "develop" }
-- kick_crons         — "kick crons", "restart crons"
-- linear_backlog     — "what's in backlog?", "show backlog"
-- linear_ticket      — "info on AMA-123" → { ticket: "AMA-123" }
-- linear_move        — "move AMA-123 to in progress" → { ticket: "AMA-123", state: "In Progress" }
-- linear_assign      — "assign AMA-789 to Joshua" → { ticket: "AMA-789", assignee: "Joshua" }
-- unknown            — anything else
-
-Respond with ONLY valid JSON: { "intent": "...", "params": { ... } }`;
-
 interface IntentResult {
   intent: string;
   params: Record<string, string>;
 }
 
-const anthropic = new Anthropic();
+function classifyIntent(text: string): IntentResult {
+  const t = text.toLowerCase().trim();
+  const ticketMatch = text.match(/\b([A-Z]+-\d+)\b/);
+  const ticket = ticketMatch?.[1] ?? "";
 
-async function classifyIntent(text: string): Promise<IntentResult> {
-  try {
-    const msg = await anthropic.messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 128,
-      system: INTENT_SYSTEM,
-      messages: [{ role: "user", content: text }],
-    });
-    const content = msg.content[0];
-    if (content.type !== "text") return { intent: "unknown", params: {} };
-    return JSON.parse(content.text) as IntentResult;
-  } catch {
-    return { intent: "unknown", params: {} };
+  // kick crons
+  if (/kick.+cron|restart.+cron|cron.+kick/.test(t)) {
+    return { intent: "kick_crons", params: {} };
   }
+
+  // retry step: "retry develop for AMA-123" or "retry AMA-123 develop"
+  const retryMatch1 = t.match(/retry\s+(\w+)\s+(?:for\s+)?([a-z]+-\d+)/i);
+  const retryMatch2 = !retryMatch1 ? t.match(/retry\s+([a-z]+-\d+)\s+(\w+)/i) : null;
+  const retryMatch = retryMatch1 ?? retryMatch2;
+  if (retryMatch) {
+    const g1 = retryMatch[1], g2 = retryMatch[2];
+    const isTicket1 = /^[a-z]+-\d+$/i.test(g1);
+    return { intent: "retry_step", params: { query: (isTicket1 ? g1 : g2).toUpperCase(), step: isTicket1 ? g2 : g1 } };
+  }
+
+  // move ticket state: "move AMA-123 to in progress"
+  const moveMatch = text.match(/move\s+([A-Z]+-\d+)\s+to\s+(.+)/i);
+  if (moveMatch) {
+    return { intent: "linear_move", params: { ticket: moveMatch[1].toUpperCase(), state: moveMatch[2].trim() } };
+  }
+
+  // assign ticket: "assign AMA-789 to Joshua"
+  const assignMatch = text.match(/assign\s+([A-Z]+-\d+)\s+to\s+(\w+)/i);
+  if (assignMatch) {
+    return { intent: "linear_assign", params: { ticket: assignMatch[1].toUpperCase(), assignee: assignMatch[2] } };
+  }
+
+  // start run
+  if (/\bstart\b/.test(t) && ticket) {
+    return { intent: "start_run", params: { ticket } };
+  }
+
+  // cancel/stop run
+  if (/\b(cancel|stop)\b/.test(t) && ticket) {
+    return { intent: "cancel_run", params: { query: ticket } };
+  }
+
+  // status of specific ticket/run
+  if (ticket && /status|how is|what.?s happening|progress/.test(t)) {
+    return { intent: "status_run", params: { query: ticket } };
+  }
+  // bare ticket ID
+  if (ticket && t.replace(/\s/g, "") === ticket.toLowerCase()) {
+    return { intent: "status_run", params: { query: ticket } };
+  }
+
+  // failed/failures
+  if (/fail|what failed|recent failure/.test(t)) {
+    return { intent: "failed_recent", params: {} };
+  }
+
+  // backlog
+  if (/backlog|unstarted|what.?s next|show ticket/.test(t)) {
+    return { intent: "linear_backlog", params: {} };
+  }
+
+  // linear ticket info
+  if (ticket && /info|detail|about|what is|tell me/.test(t)) {
+    return { intent: "linear_ticket", params: { ticket } };
+  }
+
+  // status all: "what's running", "show runs", "status"
+  if (/running|what.?s running|show runs|^status$/.test(t)) {
+    return { intent: "status_all", params: {} };
+  }
+
+  return { intent: "unknown", params: {} };
 }
 
 function formatActiveRuns(runs: ActiveRun[]): string {
@@ -68,7 +104,7 @@ export async function handleMessage(ctx: Context): Promise<void> {
   const text = ctx.message?.text;
   if (!text) return;
 
-  const { intent, params } = await classifyIntent(text);
+  const { intent, params } = classifyIntent(text);
 
   try {
     switch (intent) {
