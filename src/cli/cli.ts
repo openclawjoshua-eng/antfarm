@@ -23,6 +23,7 @@ import { listBundledWorkflows } from "../installer/workflow-fetch.js";
 import { readRecentLogs } from "../lib/logger.js";
 import { getRecentEvents, getRunEvents, type AntfarmEvent } from "../installer/events.js";
 import { startDaemon, stopDaemon, getDaemonStatus, isRunning } from "../server/daemonctl.js";
+import { startBotDaemon, stopBotDaemon, getBotDaemonStatus, isBotRunning } from "../bot/botctl.js";
 import { claimStep, completeStep, failStep, getStories, peekStep } from "../installer/step-ops.js";
 import { ensureCliSymlink } from "../installer/symlink.js";
 import { runMedicCheck, getMedicStatus, getRecentMedicChecks } from "../medic/medic.js";
@@ -103,6 +104,10 @@ function printUsage() {
       "antfarm dashboard [start] [--port N]   Start dashboard daemon (default: 3333)",
       "antfarm dashboard stop                  Stop dashboard daemon",
       "antfarm dashboard status                Check dashboard status",
+      "",
+      "antfarm bot [start]                  Start Telegram control bot daemon",
+      "antfarm bot stop                     Stop Telegram control bot",
+      "antfarm bot status                   Check bot daemon status",
       "",
       "antfarm step peek <agent-id>        Lightweight check for pending work (HAS_WORK or NO_WORK)",
       "antfarm step claim <agent-id>       Claim pending step, output resolved input as JSON",
@@ -433,6 +438,42 @@ async function main() {
     const limit = parseInt(arg, 10) || 50;
     const events = getRecentEvents(limit);
     printEvents(events);
+    return;
+  }
+
+  if (group === "bot") {
+    if (action === "stop") {
+      if (stopBotDaemon()) {
+        console.log("Bot stopped.");
+      } else {
+        console.log("Bot is not running.");
+      }
+      return;
+    }
+
+    if (action === "status") {
+      const st = getBotDaemonStatus();
+      if (st.running) {
+        console.log(`Bot running (PID ${st.pid ?? "unknown"})`);
+      } else {
+        console.log("Bot is not running.");
+      }
+      return;
+    }
+
+    // default: start
+    if (isBotRunning().running) {
+      const status = getBotDaemonStatus();
+      console.log(`Bot already running (PID ${status.pid})`);
+      return;
+    }
+    try {
+      const result = await startBotDaemon();
+      console.log(`Bot started (PID ${result.pid})`);
+    } catch (err) {
+      process.stderr.write(`Failed to start bot: ${err instanceof Error ? err.message : String(err)}\n`);
+      process.exit(1);
+    }
     return;
   }
 
