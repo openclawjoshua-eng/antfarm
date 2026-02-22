@@ -43,6 +43,7 @@ export function emitEvent(evt: AntfarmEvent): void {
     // best-effort, never throw
   }
   fireWebhook(evt);
+  fireBotNotify(evt);
 }
 
 // In-memory cache: runId -> notify_url | null
@@ -81,6 +82,29 @@ function fireWebhook(evt: AntfarmEvent): void {
   } catch {
     // fire-and-forget
   }
+}
+
+function fireBotNotify(evt: AntfarmEvent): void {
+  // Only fire for notable events
+  if (evt.event !== "step.failed" && evt.event !== "run.failed" && evt.event !== "run.completed") return;
+
+  // Read notify port from config (best-effort, default 3334)
+  let port = 3334;
+  try {
+    const cfgPath = `${process.env["HOME"] ?? ""}/.openclaw/openclaw.json`;
+    const raw = JSON.parse(fs.readFileSync(cfgPath, "utf-8")) as Record<string, unknown>;
+    const botCfg = raw["antfarmBot"] as { notifyPort?: number } | undefined;
+    if (botCfg?.notifyPort) port = botCfg.notifyPort;
+  } catch {
+    // config not found or antfarmBot not configured — skip silently
+  }
+
+  fetch(`http://127.0.0.1:${port}/notify`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(evt),
+    signal: AbortSignal.timeout(2000),
+  }).catch(() => {}); // fire-and-forget
 }
 
 // Read recent events (last N)
