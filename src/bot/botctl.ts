@@ -59,7 +59,6 @@ export function stopBotDaemon(): boolean {
   const status = isBotRunning();
   if (!status.running) return false;
   try { process.kill(status.pid, "SIGTERM"); } catch {}
-  try { fs.unlinkSync(getBotPidFile()); } catch {}
   return true;
 }
 
