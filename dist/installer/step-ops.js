@@ -372,12 +372,20 @@ export function claimStep(agentId) {
         lastCleanupTime = now;
     }
     const db = getDb();
-    const step = db.prepare(`SELECT s.id, s.step_id, s.run_id, s.input_template, s.type, s.loop_config
+    const step = db.prepare(`SELECT s.id, s.step_id, s.run_id, s.step_index, s.input_template, s.type, s.loop_config
      FROM steps s
      JOIN runs r ON r.id = s.run_id
-     WHERE s.agent_id = ? AND s.status = 'pending'
+     WHERE s.agent_id = ?
+       AND s.status = 'pending'
        AND r.status NOT IN ('failed', 'cancelled')
-     ORDER BY r.created_at ASC, s.step_index ASC
+       AND NOT EXISTS (
+         SELECT 1
+         FROM steps prev
+         WHERE prev.run_id = s.run_id
+           AND prev.step_index < s.step_index
+           AND prev.status != 'done'
+       )
+     ORDER BY s.created_at ASC
      LIMIT 1`).get(agentId);
     if (!step)
         return { found: false };
