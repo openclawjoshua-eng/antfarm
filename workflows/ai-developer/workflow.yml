@@ -37,6 +37,16 @@ agents:
       files:
         AGENTS.md: agents/picker/AGENTS.md
 
+  - id: mini-developer
+    name: Mini-Developer Orchestrator
+    role: coding
+    model: moonshot/kimi-k2.5
+    description: Thin orchestrator that runs mini-agent (MiniMax M2.5) to implement tickets
+    workspace:
+      baseDir: agents/developer
+      files:
+        AGENTS.md: agents/developer/AGENTS.md
+
   - id: developer
     name: Developer
     role: coding
@@ -163,112 +173,98 @@ steps:
       escalate_to: human
 
   - id: develop
-    agent: developer
-    timeoutSeconds: 600
+    agent: mini-developer
     input: |
-      🚨 CRITICAL: OUTPUT FORMAT REQUIREMENTS (READ THIS FIRST) 🚨
+      You are a wrapper that coordinates mini-agent (MiniMax M2.5 native agent) to implement
+      a Linear ticket. Your job is orchestration only — mini-agent does all the coding.
 
-      You MUST respond with EXACTLY these four keys — NO substitutions, NO variations:
-
-      STATUS: done
-      BRANCH_NAME: feature/AMA-607-short-name
-      CHANGED_FILES: file1.ts, file2.ts
-      REPO_NAME: supergeri/mapper-api
-
-      ❌ WRONG key names that will BREAK the system:
-      - CHANGES: (wrong — must be CHANGED_FILES)
-      - FILES: (wrong — must be CHANGED_FILES)
-      - BRANCH: (wrong — must be BRANCH_NAME)
-      - REPO: (wrong — must be REPO_NAME)
-      - PR_NUMBER: (wrong — NO PR in this step)
-      - PR_URL: (wrong — NO PR in this step)
-
-      ✅ CORRECT example output:
-      STATUS: done
-      BRANCH_NAME: feature/AMA-607-element-highlight
-      CHANGED_FILES: src/components/OutlinePulse.tsx, src/types/highlight.ts, tests/OutlinePulse.test.tsx
-      REPO_NAME: supergeri/mapper-api
-
-      ALL FOUR KEYS ARE MANDATORY. Missing any key will cause pipeline failure.
-      🚫 Do NOT create a Pull Request. Just commit and push the branch.
-
-      ═══════════════════════════════════════════════════════════════════════
-
-      Implement {{ticket_id}} ({{title}}).
-
-      DEFAULT_REPO: {{repo}}
       TICKET: {{ticket_id}}
       TITLE: {{title}}
-      DESCRIPTION: {{description}}
+      DEFAULT_REPO: {{repo}}
+
+      ── STEP 1: Determine the correct repo ──────────────────────────────────────
+      Read the ticket description carefully. Pick the right repo for the supergeri org:
+        - Python/FastAPI backend (mapper, workouts, users) → supergeri/mapper-api
+        - TypeScript/React frontend (.tsx, .ts, React) → supergeri/amakaflow-ui
+        - Workout ingestion service → supergeri/workout-ingestor-api
+        - Chat/AI service (chat history, tool calls, streaming) → supergeri/chat-api
+        - Maestro test automation (yaml flows, e2e tests) → supergeri/amakaflow-automation
+        - Android app (Kotlin, Compose, Gradle) → supergeri/amakaflow-android-app
+      If unclear, use DEFAULT_REPO above. Store your chosen repo as CHOSEN_REPO.
+
+      DESCRIPTION:
+      {{description}}
+
       ACCEPTANCE_CRITERIA:
       {{acceptance_criteria}}
 
-      ⚠️ REPO SELECTION: Read the ticket description carefully to determine the correct repo.
-      The ticket title, description, and file paths tell you which repo to use.
-      For the supergeri org:
-        - Python/FastAPI backend (mapper, workouts, users) → supergeri/mapper-api
-        - TypeScript/React frontend (.tsx, .ts, React components) → supergeri/amakaflow-ui
-        - Workout ingestion service (prompts, ingestor) → supergeri/workout-ingestor-api
-        - Chat/AI service (chat history, tool calls, streaming) → supergeri/chat-api
-        - Maestro test automation (yaml flows, replay, e2e tests) → supergeri/amakaflow-automation
-        - Android app (Kotlin, Compose, Gradle, .kt files) → supergeri/amakaflow-android-app
-      If unsure, check the ticket description for repo names, file paths, or service names.
-      Use the correct repo for cloning. Report which repo you used in REPO_NAME output.
+      ── STEP 2: Set up workspace ─────────────────────────────────────────────────
+      Run these bash commands:
+        rm -rf /tmp/{{ticket_id}}-work
+        mkdir -p /tmp/{{ticket_id}}-work
 
-      Instructions:
-      1. Clone the correct repo fresh (clean slate for retries):
-         rm -rf /tmp/{{ticket_id}}-work
-         git clone https://github.com/<correct-repo>.git /tmp/{{ticket_id}}-work
-         cd /tmp/{{ticket_id}}-work && git checkout main && git pull origin main
-      2. Create feature branch FROM latest main (use -B to force-create even if it exists):
-         git checkout -B feature/{{ticket_id}}-short-name
-      3. Read existing code to understand patterns and style
-      4. Implement the changes per the acceptance criteria
-      5. Run any available tests to verify your code works BEFORE pushing:
-         - Android/Kotlin (build.gradle or build.gradle.kts exists):
-           Run unit tests locally — JDK 17 and Android SDK are available on this machine:
-             export ANDROID_HOME=~/Library/Android/sdk
-             ./gradlew :app:testDebugUnitTest 2>&1 | tail -150
-           This takes ~2-3 minutes. Read the output carefully.
-           If ANY test FAILS: fix every failure before pushing. Do NOT push failing tests.
-           Never push to GitHub and rely on CI to catch test failures — this wastes money.
-           Only skip if gradlew itself won't start (true missing JDK/SDK — log the error).
-         - For TypeScript/JS: npm test or npx vitest run or npx jest
-         - For Python: pytest tests/ -v --tb=short
-         - If tests fail, fix the code until they pass
-      6. Commit all changes with a clear message referencing {{ticket_id}}
-      7. MANDATORY VALIDATION before pushing:
-         git rev-list --count main..HEAD
-         If the count is 0, you have NO commits. You MUST have written and committed code.
-         If the ticket appears already implemented, call step fail — do NOT push an empty branch.
-      8. Rebase on latest main before pushing (avoids conflict PRs):
-         git fetch origin main
-         git rebase origin/main
-         If rebase fails: git rebase --abort, reply STATUS: escalate with conflicted files listed
-      9. Push the branch (force-push to overwrite any stale remote branch from a cancelled run):
-         git push --force-with-lease -u origin <branch-name>
-      10. 🚫 Do NOT create a Pull Request — just push the branch
+      ── STEP 3: Write TASK.md ────────────────────────────────────────────────────
+      Write the following content to /tmp/{{ticket_id}}-work/TASK.md:
 
-      ═══════════════════════════════════════════════════════════════════════
+        # {{ticket_id}}: {{title}}
 
-      🚨 REMINDER: MANDATORY OUTPUT FORMAT (USE EXACT KEY NAMES) 🚨
+        ## Repo
+        <CHOSEN_REPO>
 
-      Your response MUST contain EXACTLY these four keys:
+        ## Description
+        {{description}}
 
-      STATUS: done
-      BRANCH_NAME: feature/{{ticket_id}}-short-name
-      CHANGED_FILES: file1.ts, file2.ts, file3.ts
-      REPO_NAME: owner/repo-name
+        ## Acceptance Criteria
+        {{acceptance_criteria}}
 
-      - STATUS must be "done"
-      - BRANCH_NAME must be the exact git branch name you pushed
-      - CHANGED_FILES must list all modified files (comma-separated)
-      - REPO_NAME must be the GitHub owner/repo you pushed to (e.g. supergeri/mapper-api)
+        ## Instructions for implementing
+        - Read the existing codebase carefully before making changes.
+        - Follow existing code patterns and conventions.
+        - Run tests before committing (pytest / npm test / vitest as appropriate).
+        - Fix any failing tests before committing.
+        - You are ALREADY on a feature branch. DO NOT create a new branch.
+        - Commit all changes with message: feat({{ticket_id}}): <brief description>
+        - Do NOT push — the wrapper script handles pushing after you commit.
+        - Do NOT create a Pull Request.
+        - Do NOT commit TASK.md itself.
 
-      DO NOT use any other key names. DO NOT add extra keys. DO NOT omit any keys.
-      DO NOT create a Pull Request.
+      ── STEP 4: Run mini-agent ───────────────────────────────────────────────────
+      Run this bash command (starts mini-agent in background):
+
+        bash ~/.openclaw/antfarm/scripts/mini-develop.sh \
+          {{ticket_id}} \
+          <CHOSEN_REPO> \
+          feature/{{ticket_id}}-short-name \
+          > /tmp/{{ticket_id}}-result.txt 2>/tmp/{{ticket_id}}-err.txt &
+        echo $! > /tmp/{{ticket_id}}-mini.pid
+        echo "mini-agent started, PID $(cat /tmp/{{ticket_id}}-mini.pid)"
+
+      ── STEP 5: Poll until complete ──────────────────────────────────────────────
+      Check every 2 minutes whether the process has finished:
+        kill -0 $(cat /tmp/{{ticket_id}}-mini.pid) 2>/dev/null && echo "RUNNING" || echo "DONE"
+
+      Keep checking until you see "DONE". Between checks, do nothing except wait.
+      If still RUNNING after 4 hours total, kill the process and output STATUS: fail.
+
+      ── STEP 6: Output results ───────────────────────────────────────────────────
+      Once DONE, read the result file:
+        cat /tmp/{{ticket_id}}-result.txt
+
+      Output its contents EXACTLY as your response. The file contains:
+        STATUS: done
+        BRANCH_NAME: feature/...
+        CHANGED_FILES: ...
+        REPO_NAME: ...
+
+      If the file contains STATUS: fail, output that. Do not add or change anything.
+
+      If the result file is missing or empty, check the error log:
+        cat /tmp/{{ticket_id}}-err.txt
+      Then output:
+        STATUS: fail
+        ERROR: <last 5 lines of error log>
     expects: "STATUS: done"
-    max_retries: 4
+    max_retries: 2
     on_fail:
       escalate_to: human
 
@@ -276,15 +272,7 @@ steps:
     agent: developer
     timeoutSeconds: 300
     input: |
-      🚨 CRITICAL: OUTPUT FORMAT REQUIREMENTS (READ THIS FIRST) 🚨
-
-      You MUST respond with EXACTLY these three keys:
-
-      STATUS: done
-      TESTS_PASSED: true
-      TEST_OUTPUT: <summary of test results>
-
-      ═══════════════════════════════════════════════════════════════════════
+      Read ~/.openclaw/antfarm/workflows/ai-developer/LEARNINGS.md before starting.
 
       Run the test suite for {{ticket_id}} on branch {{branch_name}}.
 
@@ -329,22 +317,19 @@ steps:
 
       5. Capture the full test output (pass/fail counts, error messages).
 
-      ═══════════════════════════════════════════════════════════════════════
-
-      🚨 REMINDER: MANDATORY OUTPUT FORMAT 🚨
+      ===OUTPUT FORMAT===
+      Respond with EXACTLY these keys (copy this exactly, fill in values):
 
       If tests PASS:
       STATUS: done
       TESTS_PASSED: true
-      TEST_OUTPUT: <summary — e.g. "14 passed, 0 failed">
+      TEST_OUTPUT: 14 passed, 0 failed
 
       If tests FAIL:
       STATUS: fail
       TESTS_PASSED: false
-      TEST_OUTPUT: <summary of failures with file names and error messages>
-
-      If tests pass, use STATUS: done. If tests fail, use STATUS: fail so the
-      pipeline can retry the develop step.
+      TEST_OUTPUT: test_auth.py::test_login FAILED - AssertionError: expected 200, got 401
+      ===END OUTPUT FORMAT===
     expects: "STATUS: done"
     max_retries: 0
     on_fail:
