@@ -59,10 +59,6 @@ export function stopBotDaemon() {
         process.kill(status.pid, "SIGTERM");
     }
     catch { }
-    try {
-        fs.unlinkSync(getBotPidFile());
-    }
-    catch { }
     return true;
 }
 export function getBotDaemonStatus() {

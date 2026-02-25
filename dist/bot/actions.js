@@ -6,7 +6,12 @@ export function getActiveRuns() {
     SELECT r.id, r.run_number, r.workflow_id, r.task, r.updated_at,
            s.step_id as current_step, s.agent_id as current_agent, s.status as step_status
     FROM runs r
-    LEFT JOIN steps s ON s.run_id = r.id AND s.status IN ('pending','running')
+    LEFT JOIN steps s ON s.id = (
+      SELECT id FROM steps
+      WHERE run_id = r.id AND status IN ('pending','running')
+      ORDER BY CASE status WHEN 'running' THEN 0 ELSE 1 END, step_index ASC
+      LIMIT 1
+    )
     WHERE r.status = 'running'
     ORDER BY r.created_at DESC
   `).all();
@@ -18,7 +23,12 @@ export function getRecentFailures(limit = 5) {
     SELECT r.id, r.run_number, r.task, r.status, r.updated_at,
            s.step_id as last_step, s.output as last_error
     FROM runs r
-    LEFT JOIN steps s ON s.run_id = r.id AND s.status = 'failed'
+    LEFT JOIN steps s ON s.id = (
+      SELECT id FROM steps
+      WHERE run_id = r.id AND status = 'failed'
+      ORDER BY step_index DESC
+      LIMIT 1
+    )
     WHERE r.status IN ('failed', 'cancelled')
     ORDER BY r.updated_at DESC
     LIMIT ?
@@ -39,7 +49,10 @@ export function getRunDetail(query) {
     return { ...run, steps };
 }
 export function startRun(ticketId) {
-    const output = execSync(`antfarm workflow run ai-developer "${ticketId}"`, { encoding: "utf-8", timeout: 30000 });
+    if (!/^[A-Z]+-\d+$/.test(ticketId)) {
+        throw new Error(`Invalid ticket ID format: "${ticketId}". Expected format: AMA-123`);
+    }
+    const output = execSync(`antfarm workflow run ai-developer "${ticketId}"`, { encoding: "utf-8", timeout: 120000 });
     const match = output.match(/Run: #\d+ \(([a-f0-9-]+)\)/);
     return match?.[1] ?? output.trim();
 }
@@ -67,7 +80,12 @@ export function retryStep(query, stepId) {
         return { ok: false, message: `No step "${stepId}" found in run for "${query}"` };
     db.prepare("UPDATE steps SET status='pending', retry_count=0, updated_at=datetime('now') WHERE id=?").run(step.id);
     db.prepare("UPDATE runs SET status='running', updated_at=datetime('now') WHERE id=?").run(detail.id);
-    return { ok: true, message: `Reset step "${stepId}" to pending for run #${detail.run_number}` };
+    // Kick crons so the agent picks up the reset step
+    try {
+        kickCrons();
+    }
+    catch { /* best-effort */ }
+    return { ok: true, message: `Reset step "${stepId}" to pending for run #${detail.run_number} — kicking crons` };
 }
 export function kickCrons() {
     const output = execSync("openclaw cron list", { encoding: "utf-8", timeout: 15000 });

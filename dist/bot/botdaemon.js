@@ -7,25 +7,21 @@ import { createBot } from "./bot.js";
 // Write PID file immediately
 const pidFile = path.join(os.homedir(), ".openclaw", "antfarm", "bot.pid");
 fs.writeFileSync(pidFile, String(process.pid));
-// Cleanup on exit
-process.on("SIGTERM", () => {
-    try {
-        fs.unlinkSync(pidFile);
-    }
-    catch { }
-    process.exit(0);
-});
-process.on("SIGINT", () => {
-    try {
-        fs.unlinkSync(pidFile);
-    }
-    catch { }
-    process.exit(0);
-});
 async function main() {
     const cfg = getBotConfig();
     // Start Grammy bot with long polling
     const bot = createBot(cfg.botToken, cfg.allowedChatIds);
+    // Graceful shutdown — registered here so bot.stop() is in scope
+    const shutdown = async () => {
+        try {
+            fs.unlinkSync(pidFile);
+        }
+        catch { }
+        await bot.stop().catch(() => { });
+        process.exit(0);
+    };
+    process.on("SIGTERM", () => void shutdown());
+    process.on("SIGINT", () => void shutdown());
     void bot.start({ drop_pending_updates: true });
     console.log(`[bot] Grammy polling started (PID ${process.pid})`);
     // HTTP notify endpoint — receives AntfarmEvent POSTs from events.ts
