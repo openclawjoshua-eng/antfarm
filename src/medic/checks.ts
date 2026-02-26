@@ -70,10 +70,12 @@ export function checkStuckSteps(): MedicFinding[] {
 // ── Check: Stalled Runs ─────────────────────────────────────────────
 
 const STALL_THRESHOLD_MS = MAX_ROLE_TIMEOUT_MS * 2;
+const AUTO_CANCEL_THRESHOLD_MS = 4 * 60 * 60 * 1000; // 4 hours — auto-cancel with no human needed
 
 /**
  * Find runs where no step has transitioned in 2x the max role timeout.
  * This catches systemic issues (all agents broken, crons failing, etc).
+ * Runs stalled beyond 4 hours are auto-cancelled — no human input needed at that point.
  */
 export function checkStalledRuns(): MedicFinding[] {
   const db = getDb();
@@ -94,14 +96,17 @@ export function checkStalledRuns(): MedicFinding[] {
   }>;
 
   for (const run of stalled) {
-    const ageMin = Math.round(
-      (Date.now() - new Date(run.last_step_update).getTime()) / 60000
-    );
+    const ageMs = Date.now() - new Date(run.last_step_update).getTime();
+    const ageMin = Math.round(ageMs / 60000);
+    const autoCancel = ageMs > AUTO_CANCEL_THRESHOLD_MS;
+
     findings.push({
       check: "stalled_runs",
-      severity: "critical",
-      message: `Run ${run.id.slice(0, 8)} (${run.workflow_id}: "${run.task.slice(0, 60)}") has had no step progress for ${ageMin}min`,
-      action: "none", // alert only — don't auto-fail without human input
+      severity: autoCancel ? "warning" : "critical",
+      message: autoCancel
+        ? `Run ${run.id.slice(0, 8)} (${run.workflow_id}: "${run.task.slice(0, 60)}") stalled ${ageMin}min — auto-cancelling`
+        : `Run ${run.id.slice(0, 8)} (${run.workflow_id}: "${run.task.slice(0, 60)}") has had no step progress for ${ageMin}min`,
+      action: autoCancel ? "fail_run" : "none",
       runId: run.id,
       remediated: false,
     });
