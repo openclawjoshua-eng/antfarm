@@ -28,12 +28,14 @@ fi
 rm -rf "$REPO_DIR"
 git clone "https://github.com/${REPO}.git" "$REPO_DIR"
 cd "$REPO_DIR"
-git checkout main && git pull origin main
+BASE_BRANCH=$(git remote show origin | grep 'HEAD branch' | awk '{print $NF}')
+BASE_BRANCH="${BASE_BRANCH:-main}"
+git checkout "$BASE_BRANCH" && git pull origin "$BASE_BRANCH"
 
 # ── 3. Pre-run tests on main (capture baseline state for mini-agent) ──────────
 {
   printf '\n## Current Test State\n\n'
-  printf 'These tests ran on `main` before your branch was created.\n'
+  printf "These tests ran on \`$BASE_BRANCH\` before your branch was created.\n"
   printf 'Keep all currently-passing tests green. Fix pre-existing failures only if the ticket requires it.\n\n'
   printf '```\n'
   if ls build.gradle build.gradle.kts settings.gradle settings.gradle.kts >/dev/null 2>&1; then
@@ -100,7 +102,7 @@ done
 
 # ── 7. Validate: must have at least one commit ahead of main ──────────────────
 cd "$REPO_DIR"
-COMMITS=$(git rev-list --count main..HEAD 2>/dev/null || echo "0")
+COMMITS=$(git rev-list --count "$BASE_BRANCH"..HEAD 2>/dev/null || echo "0")
 if [ "$COMMITS" -eq 0 ]; then
   echo "STATUS: fail"
   echo "ERROR: mini-agent produced no commits. Log tail:"
@@ -119,10 +121,11 @@ git push --force-with-lease -u origin "$BRANCH"
 # ── 9. Collect results from git state ────────────────────────────────────────
 ACTUAL_BRANCH=$(git branch --show-current)
 REPO_REMOTE=$(git remote get-url origin | sed 's|.*github\.com/||' | sed 's|\.git$||')
-FILES=$(git diff --name-only origin/main...HEAD | tr '\n' ',' | sed 's/,$//')
+FILES=$(git diff --name-only "origin/$BASE_BRANCH"...HEAD | tr '\n' ',' | sed 's/,$//')
 
 # ── 10. Output antfarm step result ───────────────────────────────────────────
 echo "STATUS: done"
 echo "BRANCH_NAME: ${ACTUAL_BRANCH}"
 echo "CHANGED_FILES: ${FILES}"
 echo "REPO_NAME: ${REPO_REMOTE}"
+echo "BASE_BRANCH: ${BASE_BRANCH}"

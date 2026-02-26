@@ -15,7 +15,7 @@ notifications:
   url: http://127.0.0.1:9876
 
 context:
-  repo: supergeri/mapper-api
+  repo: Amakaflow/amakaflow-backend
   linear_project: AMA
   linear_team: MyAmaka
 
@@ -60,7 +60,7 @@ agents:
   - id: auditor
     name: Auditor
     role: analysis
-    model: moonshot/kimi-k2.5
+    model: anthropic/claude-haiku-4-5-20251001
     description: Reviews code on branch for security + performance
     workspace:
       baseDir: agents/auditor
@@ -70,7 +70,7 @@ agents:
   - id: closer
     name: Closer
     role: analysis
-    model: moonshot/kimi-k2.5
+    model: anthropic/claude-haiku-4-5-20251001
     description: Merges PR, verifies, cleans up
     workspace:
       baseDir: agents/closer
@@ -109,8 +109,12 @@ steps:
       HOWEVER — before returning it, check for an existing open PR (see step 0 below).
 
       Step 0 — DUPLICATE WORK CHECK (run before selecting ANY ticket):
-      Check for existing open PRs in the repo:
-        gh pr list --repo {{repo}} --state open --json title,number,headRefName
+      Check for existing open PRs across ALL Amakaflow repos:
+        gh pr list --repo Amakaflow/amakaflow-backend --state open --json title,number,headRefName,url
+        gh pr list --repo Amakaflow/amakaflow-ui --state open --json title,number,headRefName,url
+        gh pr list --repo Amakaflow/amakaflow-ios-app --state open --json title,number,headRefName,url
+        gh pr list --repo Amakaflow/amakaflow-android-app --state open --json title,number,headRefName,url
+        gh pr list --repo Amakaflow/amakaflow-automation --state open --json title,number,headRefName,url
       For each candidate ticket ID, check if any open PR's title or branch name
       contains that ticket ID (e.g., "AMA-607" appears in the PR title or branch).
       If an open PR already exists for a ticket:
@@ -128,6 +132,7 @@ steps:
       2. SKIP these ticket types (they are not coding tasks):
          - Tickets with "SPIKE" in the title (research/planning tasks)
          - Tickets with "SPIKE" label
+         - Tickets whose title starts with "Research:" (routed to deep-research workflow)
          - Tickets that are purely documentation or research with no code changes
       3. Sort by priority (Urgent > High > Medium > Low > No priority)
       4. Pick the highest-priority unblocked CODING ticket that has NO existing open PR
@@ -136,30 +141,52 @@ steps:
 
       After selecting a ticket, BEFORE returning output:
       7. Check the ticket description for these two required CI fields:
-         - "## Repo:" line (e.g. "## Repo: supergeri/amakaflow-android-app")
+         - "## Repo:" line (e.g. "## Repo: Amakaflow/amakaflow-android-app")
          - "## Test command:" line (e.g. "## Test command: ./gradlew :app:testDebugUnitTest")
          If EITHER is missing, patch the Linear ticket description via GraphQL mutation to add them
          at the top of the description. Use the repo you've identified from the ticket content.
          Repo mapping:
-           - Python/FastAPI (mapper, workouts) → supergeri/mapper-api
-           - TypeScript/React (.tsx) → supergeri/amakaflow-ui
-           - Workout ingestion → supergeri/workout-ingestor-api
-           - Chat/AI service → supergeri/chat-api
-           - Android (Kotlin, .kt, Compose) → supergeri/amakaflow-android-app
-           - Maestro/e2e tests → supergeri/amakaflow-automation
+           - Python/FastAPI backend (mapper, workouts, users, chat, AI) → Amakaflow/amakaflow-backend
+           - TypeScript/React (.tsx) → Amakaflow/amakaflow-ui
+           - iOS app (Swift, Xcode, .swift) → Amakaflow/amakaflow-ios-app
+           - Android (Kotlin, .kt, Compose) → Amakaflow/amakaflow-android-app
+           - Maestro/e2e tests → Amakaflow/amakaflow-automation
          Test command mapping:
            - Android → ./gradlew :app:testDebugUnitTest
            - Python → pytest
            - TypeScript/React → npm test
+           - iOS → xcodebuild test -scheme AmakaFlow -destination 'platform=iOS Simulator,name=iPhone 16'
            - Other → npm test
          Use this mutation (replace ISSUE_ID and NEW_DESCRIPTION):
            mutation { issueUpdate(id: "ISSUE_ID", input: { description: "NEW_DESCRIPTION" }) { success } }
          Return the PATCHED description in your DESCRIPTION output key.
 
+      7b. APIFY / EXTERNAL SERVICE ID CHECK:
+         Scan the ticket DESCRIPTION for mentions of "Apify", "scraper", "crawler", or "ingest".
+         If found, check whether the description contains a verified actor ID in one of these forms:
+           - A string matching `<username>/<actor-name>` cited with a URL (e.g. https://apify.com/...)
+           - An explicit "Actor:" or "Apify actor:" field
+         If the description mentions Apify/scraping but does NOT include a verified actor ID:
+           a. Add a ⚠️ warning block at the top of the ticket description via issueUpdate:
+              "⚠️ UNVERIFIED ACTOR ID — Before implementing, confirm the exact Apify actor ID at
+              https://apify.com/store and add it to this ticket as: Apify actor: username/actor-name"
+           b. Add a Linear comment on the ticket:
+              "⚠️ This ticket references Apify/scraping but does not include a verified actor ID.
+              Joshua must NOT guess or invent actor IDs. Verify at https://apify.com/store and
+              update this ticket before implementing."
+           Return the updated DESCRIPTION (with warning) in your DESCRIPTION output key.
+
+      8. Set ticket state to "In Progress" in Linear:
+         mutation {
+           issueUpdate(id: "<ISSUE_UUID>", input: { stateId: "bafb8538-5b85-45c4-8630-7effdddbf34e" }) { success }
+         }
+         You already have the issue UUID from your Linear query above — use it directly.
+
       🚨 REMINDER: MANDATORY OUTPUT FORMAT 🚨
 
       STATUS: done
       TICKET_ID: <the ticket ID, e.g. AMA-607>
+      ISSUE_ID: <the issue UUID from Linear, e.g. 3e2b5bda-06be-4200-804f-809dbeb06a5a>
       TITLE: <ticket title>
       DESCRIPTION: <full description from Linear>
       ACCEPTANCE_CRITERIA: |
@@ -183,13 +210,12 @@ steps:
       DEFAULT_REPO: {{repo}}
 
       ── STEP 1: Determine the correct repo ──────────────────────────────────────
-      Read the ticket description carefully. Pick the right repo for the supergeri org:
-        - Python/FastAPI backend (mapper, workouts, users) → supergeri/mapper-api
-        - TypeScript/React frontend (.tsx, .ts, React) → supergeri/amakaflow-ui
-        - Workout ingestion service → supergeri/workout-ingestor-api
-        - Chat/AI service (chat history, tool calls, streaming) → supergeri/chat-api
-        - Maestro test automation (yaml flows, e2e tests) → supergeri/amakaflow-automation
-        - Android app (Kotlin, Compose, Gradle) → supergeri/amakaflow-android-app
+      Read the ticket description carefully. Pick the right repo for the Amakaflow org:
+        - Python/FastAPI backend (mapper, workouts, users, chat, AI) → Amakaflow/amakaflow-backend
+        - TypeScript/React frontend (.tsx, .ts, React) → Amakaflow/amakaflow-ui
+        - iOS app (Swift, Xcode, .swift) → Amakaflow/amakaflow-ios-app
+        - Android app (Kotlin, Compose, Gradle) → Amakaflow/amakaflow-android-app
+        - Maestro test automation (yaml flows, e2e tests) → Amakaflow/amakaflow-automation
       If unclear, use DEFAULT_REPO above. Store your chosen repo as CHOSEN_REPO.
 
       DESCRIPTION:
@@ -255,6 +281,9 @@ steps:
         BRANCH_NAME: feature/...
         CHANGED_FILES: ...
         REPO_NAME: ...
+        BASE_BRANCH: develop
+
+      ⚠️ Copy ALL keys from the file verbatim — including BASE_BRANCH. Do not drop any keys.
 
       If the file contains STATUS: fail, output that. Do not add or change anything.
 
@@ -345,8 +374,11 @@ steps:
       BRANCH: {{branch_name}}
       REPO: {{repo_name}}
       REPO_FALLBACK: {{repo}}
+      BASE_BRANCH: {{base_branch}}
       TICKET: {{ticket_id}}
       CHANGED_FILES: {{changed_files}}
+
+      ⚠️ Use BASE_BRANCH (not "main") for all git comparisons. If BASE_BRANCH contains "[missing:", detect it: gh repo view <repo> --json defaultBranchRef --jq .defaultBranchRef.name
 
       ⚠️ There is NO Pull Request yet. Review the branch directly.
 
@@ -356,7 +388,7 @@ steps:
            git ls-remote --heads https://github.com/<repo>.git "refs/heads/feature/{{ticket_id}}*"
            Use the first matching branch name.
         3. If no branch found in the primary repo, also check other repos:
-           gh search repos "{{ticket_id}}" --owner supergeri --json fullName
+           gh search repos "{{ticket_id}}" --owner Amakaflow --json fullName
            Then search each for the branch.
 
       Task:
@@ -367,7 +399,7 @@ steps:
          git checkout <branch>
 
       2. View the diff against main:
-         git diff origin/main...HEAD
+         git diff origin/<BASE_BRANCH>...HEAD
 
       3. Read the changed files and check for:
          - Security issues (injection, auth bypass, credential leaks)
@@ -376,6 +408,19 @@ steps:
          - Type safety
          - Performance concerns (N+1, blocking calls, etc.)
          - Code style consistency with the rest of the codebase
+
+      3b. EXTERNAL SERVICE ID CHECK — scan the diff for hardcoded third-party identifiers:
+         Look for any string in the diff that looks like an external service slug or ID:
+           - Apify actor IDs: strings matching `["']([a-z0-9_-]+/[a-z0-9_-]+)["']` used as actor names
+           - Any string passed to an Apify client as an actor argument
+         For each such identifier found:
+           a. Check whether that EXACT string appears verbatim in the ticket DESCRIPTION or ACCEPTANCE_CRITERIA
+              (use the TICKET ID to fetch the Linear ticket: { issue(id: "{{ticket_id}}") { description } })
+           b. If the ID does NOT appear in the ticket, it was likely invented — flag it:
+              Add to ISSUES: "Unverified external service ID `<id>` at <file>:<line> — not specified
+              in ticket. Verify it exists (e.g. https://apify.com/<id>) before shipping."
+              Set AUDIT_RESULT: fail for this reason alone.
+           c. If the ID IS in the ticket, it is verified — no issue.
 
       4. Generate audit report with specific file paths and line numbers
 
@@ -413,7 +458,7 @@ steps:
 
       STATUS: done
       PR_NUMBER: #142
-      PR_URL: https://github.com/supergeri/amakaflow-ui/pull/142
+      PR_URL: https://github.com/Amakaflow/amakaflow-ui/pull/142
 
       ═══════════════════════════════════════════════════════════════════════
 
@@ -422,10 +467,17 @@ steps:
       BRANCH: {{branch_name}}
       REPO: {{repo_name}}
       REPO_FALLBACK: {{repo}}
+      BASE_BRANCH: {{base_branch}}
+      ISSUE_ID: {{issue_id}}
       TICKET: {{ticket_id}}
       AUDIT_RESULT: {{audit_result}}
       ISSUES: {{issues}}
       RECOMMENDATIONS: {{recommendations}}
+
+      ⚠️ Use BASE_BRANCH (not "main") everywhere below.
+         If BASE_BRANCH contains "[missing:":
+           - If REPO is Amakaflow/amakaflow-backend → BASE_BRANCH = develop
+           - Otherwise → BASE_BRANCH = main
 
       ⚠️ FALLBACK: If BRANCH or REPO contain "[missing:" values, discover them:
         1. Determine the actual repo: use REPO value. If it contains "[missing:", use REPO_FALLBACK.
@@ -465,24 +517,30 @@ steps:
          - Commit fixes: git commit -am "fix: address audit feedback for {{ticket_id}}"
          - Push: git push origin <branch>
 
-      3b. REBASE CHECK — before creating the PR, ensure the branch is up to date with main:
-         a. Check how far behind main the branch is:
-            gh api repos/<repo>/compare/main...<branch> --jq .behind_by
+      3b. REBASE CHECK — before creating the PR, ensure the branch is up to date with BASE_BRANCH:
+         a. Check how far behind BASE_BRANCH the branch is:
+            gh api repos/<repo>/compare/<BASE_BRANCH>...<branch> --jq .behind_by
          b. If behind_by > 0:
-            git fetch origin main
-            git rebase origin/main
+            git fetch origin <BASE_BRANCH>
+            git rebase origin/<BASE_BRANCH>
             - If rebase succeeds: git push --force-with-lease origin <branch>
             - If rebase fails (conflicts):
               git rebase --abort
               Reply STATUS: escalate with REASON: rebase conflict — manual resolution required, list the conflicted files
          c. If behind_by == 0: continue to step 4
 
-      4. Create a Pull Request to main:
-         gh pr create --repo <repo> --base main --head <branch> \
+      4. Create a Pull Request to BASE_BRANCH:
+         gh pr create --repo <repo> --base <BASE_BRANCH> --head <branch> \
            --title "{{ticket_id}}: {{title}}" \
            --body "Implements {{ticket_id}} — {{title}}"
 
       5. Capture the PR number and URL from the gh pr create output.
+
+      6. Set ticket to "In Review" in Linear (ISSUE_ID is in the input above):
+         mutation {
+           issueUpdate(id: "{{issue_id}}", input: { stateId: "e476bee3-6f64-4c25-88e2-664fccf7b644" }) { success }
+         }
+         If ISSUE_ID contains "[missing:", query for it: { issue(id: "{{ticket_id}}") { id } }
 
       ═══════════════════════════════════════════════════════════════════════
 
@@ -505,13 +563,19 @@ steps:
   - id: merge
     agent: closer
     input: |
-      Merge PR {{pr_number}} for {{ticket_id}} into main, verify, and clean up.
+      Merge PR {{pr_number}} for {{ticket_id}}, verify, and clean up.
 
       PR: {{pr_number}}
       URL: {{pr_url}}
       REPO: {{repo_name}}
       REPO_FALLBACK: {{repo}}
+      BASE_BRANCH: {{base_branch}}
       TICKET: {{ticket_id}}
+
+      ⚠️ Use BASE_BRANCH (not "main") everywhere below.
+         If BASE_BRANCH contains "[missing:":
+           - If REPO is Amakaflow/amakaflow-backend → BASE_BRANCH = develop
+           - Otherwise → BASE_BRANCH = main
 
       ⚠️ CRITICAL: Do NOT use sleep, wait, or polling loops. Check ONCE and return immediately.
       🚨 ABSOLUTE RULE: Do NOT fabricate, guess, or invent a merge SHA. You MUST get it from the GitHub API.
@@ -525,12 +589,12 @@ steps:
            a. Find the closed PR:
               gh pr list --repo <repo> --state closed --json number,url,headRefName \
                 --jq '.[] | select(.headRefName | contains("{{ticket_id}}"))'
-           b. If a closed PR exists, check if the branch still has commits above main:
-              gh api repos/<repo>/compare/main...<branch-name> --jq .ahead_by
+           b. If a closed PR exists, check if the branch still has commits above BASE_BRANCH:
+              gh api repos/<repo>/compare/<BASE_BRANCH>...<branch-name> --jq .ahead_by
            c. If ahead_by > 0, the branch has real work — reopen the PR:
               gh pr reopen <pr_number> --repo <repo>
               Then use this PR for all subsequent steps.
-           d. If ahead_by == 0, the branch is empty — reply STATUS: escalate with REASON: branch has no commits above main.
+           d. If ahead_by == 0, the branch is empty — reply STATUS: escalate with REASON: branch has no commits above BASE_BRANCH.
         4. Use the discovered (or reopened) PR number and URL for all subsequent commands.
 
       Task:
@@ -560,10 +624,10 @@ steps:
          gh pr merge <pr_number> --repo <repo> --squash --delete-branch
          IMPORTANT: Check the exit code. If the command fails, do NOT proceed — report STATUS: escalate.
 
-      4. If NOT mergeable (conflicts with main): attempt rebase:
+      4. If NOT mergeable (conflicts with BASE_BRANCH): attempt rebase:
          a. cd /tmp/{{ticket_id}}-work || git clone https://github.com/<repo>.git /tmp/{{ticket_id}}-work
-         b. cd /tmp/{{ticket_id}}-work && git checkout <branch> && git fetch origin main
-         c. git rebase origin/main
+         b. cd /tmp/{{ticket_id}}-work && git checkout <branch> && git fetch origin <BASE_BRANCH>
+         c. git rebase origin/<BASE_BRANCH>
          d. If rebase succeeds: git push --force-with-lease, then try merge again
          e. If rebase fails: git rebase --abort, then reply STATUS: escalate
 
@@ -595,13 +659,15 @@ steps:
       Verify merge and clean up for {{ticket_id}}.
 
       TICKET: {{ticket_id}}
+      ISSUE_ID: {{issue_id}}
       REPO: {{repo_name}}
       REPO_FALLBACK: {{repo}}
+      BASE_BRANCH: {{base_branch}}
       MERGE_SHA: {{merge_sha}}
 
       ⚠️ CRITICAL: Do NOT use sleep, wait, or polling loops. Check ONCE and return immediately.
 
-      ⚠️ FALLBACK: If REPO contains "[missing:", use REPO_FALLBACK.
+      ⚠️ FALLBACK: If REPO contains "[missing:", use REPO_FALLBACK. If BASE_BRANCH contains "[missing:", detect it: gh repo view <repo> --json defaultBranchRef --jq .defaultBranchRef.name
 
       Task:
       0. MANDATORY FIRST CHECK — verify the PR is actually merged (prevent false positives):
@@ -614,14 +680,20 @@ steps:
          - If state is "MERGED" but sha is null/empty: reply STATUS: escalate with REASON: PR merged but no commit SHA found
          - Only proceed if state == "MERGED" AND sha is present
 
-      1. Verify the merge commit exists on main:
+      1. Verify the merge commit exists on BASE_BRANCH:
          gh api repos/<repo>/commits/{{merge_sha}} --jq '.sha' 2>/dev/null
          If MERGE_SHA contains "[missing:", use the sha discovered in step 0 above.
 
       2. Clean up work directories:
          rm -rf /tmp/{{ticket_id}}-work /tmp/{{ticket_id}}-audit 2>/dev/null || true
 
-      3. Report results:
+      3. Set ticket to "Done" in Linear (ISSUE_ID is in the input above):
+         mutation {
+           issueUpdate(id: "{{issue_id}}", input: { stateId: "06db5600-ff0f-47d8-92b8-d742ab151def" }) { success }
+         }
+         If ISSUE_ID contains "[missing:", query for it: { issue(id: "{{ticket_id}}") { id } }
+
+      4. Report results:
 
       If verification succeeded:
       STATUS: done

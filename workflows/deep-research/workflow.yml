@@ -15,6 +15,7 @@ agents:
   - id: planner
     name: Research Planner
     role: analysis
+    model: anthropic/claude-haiku-4-5-20251001
     description: Decomposes a broad prompt into focused research lanes.
     workspace:
       baseDir: agents/planner
@@ -26,6 +27,7 @@ agents:
   - id: researcher
     name: Researcher
     role: scanning
+    model: deepseek/deepseek-chat
     description: Collects evidence from credible sources for each lane.
     workspace:
       baseDir: agents/researcher
@@ -37,6 +39,7 @@ agents:
   - id: validator
     name: Evidence Validator
     role: scanning
+    model: anthropic/claude-haiku-4-5-20251001
     description: Verifies source quality, claim traceability, and confidence.
     workspace:
       baseDir: agents/validator
@@ -48,6 +51,7 @@ agents:
   - id: synthesizer
     name: Synthesizer
     role: analysis
+    model: deepseek/deepseek-chat
     description: Produces a full draft from validated research artifacts.
     workspace:
       baseDir: agents/synthesizer
@@ -59,6 +63,7 @@ agents:
   - id: editor
     name: Editor
     role: analysis
+    model: deepseek/deepseek-chat
     description: Final editorial pass for clarity, structure, and actionability.
     workspace:
       baseDir: agents/editor
