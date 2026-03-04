@@ -40,7 +40,8 @@ agents:
   - id: mini-developer
     name: Mini-Developer Orchestrator
     role: coding
-    model: moonshot/kimi-k2.5
+    model: anthropic/claude-haiku-4-5-20251001
+    num_crons: 3
     description: Thin orchestrator that runs mini-agent (MiniMax M2.5) to implement tickets
     workspace:
       baseDir: agents/developer
@@ -311,9 +312,13 @@ steps:
       TICKET: {{ticket_id}}
 
       ⚠️ FALLBACK: If BRANCH or REPO contain "[missing:" values, discover them:
-        1. Determine the actual repo: use REPO value. If it contains "[missing:", use REPO_FALLBACK.
-        2. Discover the branch:
-           git ls-remote --heads https://github.com/<repo>.git "refs/heads/feature/{{ticket_id}}*"
+        1. If REPO contains "[missing:", search ALL repos for the branch:
+           for repo in Amakaflow/amakaflow-backend Amakaflow/amakaflow-ui Amakaflow/amakaflow-ios-app Amakaflow/amakaflow-android-app Amakaflow/amakaflow-automation; do
+             result=$(git ls-remote --heads https://github.com/$repo.git "refs/heads/feature/{{ticket_id}}*" 2>/dev/null)
+             if [[ -n "$result" ]]; then echo "Found in $repo"; REPO=$repo; break; fi
+           done
+        2. Discover the branch from that repo:
+           git ls-remote --heads https://github.com/$REPO.git "refs/heads/feature/{{ticket_id}}*"
            Use the first matching branch name.
 
       Task:
@@ -383,13 +388,14 @@ steps:
       ⚠️ There is NO Pull Request yet. Review the branch directly.
 
       ⚠️ FALLBACK: If BRANCH or REPO contain "[missing:" values, discover them:
-        1. Determine the actual repo: use REPO value. If it contains "[missing:", use REPO_FALLBACK.
-        2. Discover the branch:
-           git ls-remote --heads https://github.com/<repo>.git "refs/heads/feature/{{ticket_id}}*"
+        1. If REPO contains "[missing:", search ALL repos for the branch:
+           for repo in Amakaflow/amakaflow-backend Amakaflow/amakaflow-ui Amakaflow/amakaflow-ios-app Amakaflow/amakaflow-android-app Amakaflow/amakaflow-automation; do
+             result=$(git ls-remote --heads https://github.com/$repo.git "refs/heads/feature/{{ticket_id}}*" 2>/dev/null)
+             if [[ -n "$result" ]]; then echo "Found in $repo"; REPO=$repo; break; fi
+           done
+        2. Discover the branch from that repo:
+           git ls-remote --heads https://github.com/$REPO.git "refs/heads/feature/{{ticket_id}}*"
            Use the first matching branch name.
-        3. If no branch found in the primary repo, also check other repos:
-           gh search repos "{{ticket_id}}" --owner Amakaflow --json fullName
-           Then search each for the branch.
 
       Task:
       1. Clone/checkout the branch (use discovered repo and branch if needed):
@@ -480,9 +486,14 @@ steps:
            - Otherwise → BASE_BRANCH = main
 
       ⚠️ FALLBACK: If BRANCH or REPO contain "[missing:" values, discover them:
-        1. Determine the actual repo: use REPO value. If it contains "[missing:", use REPO_FALLBACK.
-        2. Discover the branch:
-           git ls-remote --heads https://github.com/<repo>.git "refs/heads/feature/{{ticket_id}}*"
+        1. If REPO contains "[missing:", search ALL repos for the branch:
+           for repo in Amakaflow/amakaflow-backend Amakaflow/amakaflow-ui Amakaflow/amakaflow-ios-app Amakaflow/amakaflow-android-app Amakaflow/amakaflow-automation; do
+             result=$(git ls-remote --heads https://github.com/$repo.git "refs/heads/feature/{{ticket_id}}*" 2>/dev/null)
+             if [[ -n "$result" ]]; then echo "Found in $repo"; REPO=$repo; break; fi
+           done
+        2. Discover the branch from that repo:
+           git ls-remote --heads https://github.com/$REPO.git "refs/heads/feature/{{ticket_id}}*"
+           Use the first matching branch name.
 
       Task:
       1. Check out the branch (use discovered repo and branch if needed):
@@ -581,7 +592,11 @@ steps:
       🚨 ABSOLUTE RULE: Do NOT fabricate, guess, or invent a merge SHA. You MUST get it from the GitHub API.
 
       ⚠️ FALLBACK: If PR or URL contain "[missing:" values, discover the PR:
-        1. Determine the actual repo: use REPO value. If it contains "[missing:", use REPO_FALLBACK.
+        1. If REPO contains "[missing:", search ALL repos for the PR:
+           for repo in Amakaflow/amakaflow-backend Amakaflow/amakaflow-ui Amakaflow/amakaflow-ios-app Amakaflow/amakaflow-android-app Amakaflow/amakaflow-automation; do
+             result=$(gh pr list --repo $repo --state open --json headRefName --jq '.[].headRefName' 2>/dev/null | grep "{{ticket_id}}" || true)
+             if [[ -n "$result" ]]; then echo "Found in $repo"; REPO=$repo; break; fi
+           done
         2. Find the open PR for this ticket:
            gh pr list --repo <repo> --state open --json number,url,headRefName \
              --jq '.[] | select(.headRefName | contains("{{ticket_id}}"))'
@@ -598,10 +613,33 @@ steps:
         4. Use the discovered (or reopened) PR number and URL for all subsequent commands.
 
       Task:
+      0. Check if PR is already merged (handle re-run case):
+         gh pr view <pr_number> --repo <repo> --json state,mergeCommit --jq '{state: .state, sha: .mergeCommit.oid}'
+         If state is "MERGED": skip to step 5 verification directly.
+
       1. Check that CI checks have passed (ONE check, no polling):
          gh pr checks <pr_number> --repo <repo>
          If checks are still running, wait up to 60 seconds checking every 10 seconds.
-         If checks fail, reply STATUS: escalate with details.
+         ⚠️ IMPORTANT: Only escalate if a REQUIRED check fails. Non-required checks (like
+         validate-ticket, claude-comment) may fail without blocking merge — ignore them.
+         To identify required checks, use:
+           gh api repos/<repo>/branches/<BASE_BRANCH>/protection --jq '.required_status_checks.contexts'
+         Only escalate if a check listed as required has failed.
+
+         🚨 SPECIAL CASE — if the failing required check is named "review":
+         This means the automated Claude code review found Critical or Major issues.
+         Do NOT retry fix_and_pr. Instead:
+           1. Get the review comment:
+              gh pr view <pr_number> --repo <repo> --json comments \
+                --jq '[.comments[] | select(.body | contains("## Automated Code Review"))] | last | .body'
+           2. Send a Telegram notification:
+              openclaw message send --channel telegram --to 7888191549 \
+                "🔍 **Claude review blocked merge for {{ticket_id}}**\n\nPR: <pr_url>\n\nThe automated review found issues that need attention. Please review the PR comment and decide whether to approve or request fixes."
+           3. Reply immediately:
+              STATUS: escalate
+              REASON: Claude review (required check) failed — human review needed
+              PR_NUMBER: <pr_number>
+              PR_URL: <pr_url>
 
       1b. CHECK FOR BLOCKING REVIEWS before attempting merge:
          gh pr view <pr_number> --repo <repo> --json reviews,mergeStateStatus \

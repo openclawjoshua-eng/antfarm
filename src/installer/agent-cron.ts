@@ -121,9 +121,7 @@ export async function setupAgentCrons(workflow: WorkflowSpec): Promise<void> {
 
   for (let i = 0; i < agents.length; i++) {
     const agent = agents[i];
-    const anchorMs = i * 60_000; // stagger agents by 1 minute each
-    const cronName = `antfarm/${workflow.id}/${agent.id}`;
-    const agentId = `${workflow.id}_${agent.id}`;
+    const numCrons = (agent as any).num_crons ?? 1;
 
     const pollingModel = agent.pollingModel ?? workflowPollingModel;
     const workModel = agent.model;
@@ -138,18 +136,26 @@ export async function setupAgentCrons(workflow: WorkflowSpec): Promise<void> {
       ? ((workflow as any).cron?.timeout_seconds ?? DEFAULT_DIRECT_TIMEOUT_SECONDS)
       : workflowPollingTimeout;
 
-    const result = await createAgentCronJob({
-      name: cronName,
-      schedule: { kind: "every", everyMs, anchorMs },
-      sessionTarget: "isolated",
-      agentId,
-      payload: { kind: "agentTurn", message: prompt, model: pollingModel, timeoutSeconds },
-      delivery: { mode: "none" },
-      enabled: true,
-    });
+    for (let j = 0; j < numCrons; j++) {
+      const cronSuffix = numCrons > 1 ? `/${j + 1}` : '';
+      const cronName = `antfarm/${workflow.id}/${agent.id}${cronSuffix}`;
+      const agentId = `${workflow.id}_${agent.id}`;
+      // Stagger: 1 min per agent, then spread multiple crons evenly within interval
+      const anchorMs = i * 60_000 + j * Math.floor(everyMs / numCrons);
 
-    if (!result.ok) {
-      throw new Error(`Failed to create cron job for agent "${agent.id}": ${result.error}`);
+      const result = await createAgentCronJob({
+        name: cronName,
+        schedule: { kind: "every", everyMs, anchorMs },
+        sessionTarget: "isolated",
+        agentId,
+        payload: { kind: "agentTurn", message: prompt, model: pollingModel, timeoutSeconds },
+        delivery: { mode: "none" },
+        enabled: true,
+      });
+
+      if (!result.ok) {
+        throw new Error(`Failed to create cron job for agent "${agent.id}" (${j + 1}/${numCrons}): ${result.error}`);
+      }
     }
   }
 }

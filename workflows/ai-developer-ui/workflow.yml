@@ -170,8 +170,8 @@ steps:
       1. Clone the repo fresh (clean slate for retries):
          rm -rf /tmp/{{ticket_id}}-work
          git clone https://github.com/Amakaflow/amakaflow-ui.git /tmp/{{ticket_id}}-work
-         cd /tmp/{{ticket_id}}-work && git checkout main && git pull origin main
-      2. Create feature branch FROM latest main (use -B to force-create even if it exists):
+         cd /tmp/{{ticket_id}}-work && git checkout develop && git pull origin develop
+      2. Create feature branch FROM latest develop (use -B to force-create even if it exists):
          git checkout -B feature/{{ticket_id}}-short-name
       3. Read existing code to understand patterns and style
       4. Implement the changes per the acceptance criteria
@@ -180,12 +180,12 @@ steps:
          If tests fail, fix the code until they pass
       6. Commit all changes with a clear message referencing {{ticket_id}}
       7. MANDATORY VALIDATION before pushing:
-         git rev-list --count main..HEAD
+         git rev-list --count develop..HEAD
          If the count is 0, you have NO commits. You MUST have written and committed code.
          If the ticket appears already implemented, call step fail — do NOT push an empty branch.
-      8. Rebase on latest main before pushing (avoids conflict PRs):
-         git fetch origin main
-         git rebase origin/main
+      8. Rebase on latest develop before pushing (avoids conflict PRs):
+         git fetch origin develop
+         git rebase origin/develop
          If rebase fails: git rebase --abort, reply STATUS: escalate with conflicted files listed
       9. Push the branch (force-push to overwrite any stale remote branch from a cancelled run):
          git push --force-with-lease -u origin <branch-name>
@@ -301,8 +301,8 @@ steps:
          git fetch origin <branch>
          git checkout <branch>
 
-      2. View the diff against main:
-         git diff origin/main...HEAD
+      2. View the diff against develop:
+         git diff origin/develop...HEAD
 
       3. Read the changed files and check for:
          - Security issues (injection, auth bypass, credential leaks)
@@ -398,20 +398,20 @@ steps:
          - Commit fixes: git commit -am "fix: address audit feedback for {{ticket_id}}"
          - Push: git push origin <branch>
 
-      3b. REBASE CHECK — before creating the PR, ensure the branch is up to date with main:
-         a. Check how far behind main the branch is:
-            gh api repos/Amakaflow/amakaflow-ui/compare/main...<branch> --jq .behind_by
+      3b. REBASE CHECK — before creating the PR, ensure the branch is up to date with develop:
+         a. Check how far behind develop the branch is:
+            gh api repos/Amakaflow/amakaflow-ui/compare/develop...<branch> --jq .behind_by
          b. If behind_by > 0:
-            git fetch origin main
-            git rebase origin/main
+            git fetch origin develop
+            git rebase origin/develop
             - If rebase succeeds: git push --force-with-lease origin <branch>
             - If rebase fails (conflicts):
               git rebase --abort
               Reply STATUS: escalate with REASON: rebase conflict — manual resolution required, list the conflicted files
          c. If behind_by == 0: continue to step 4
 
-      4. Create a Pull Request to main:
-         gh pr create --repo Amakaflow/amakaflow-ui --base main --head <branch> \
+      4. Create a Pull Request to develop:
+         gh pr create --repo Amakaflow/amakaflow-ui --base develop --head <branch> \
            --title "{{ticket_id}}: {{title}}" \
            --body "Implements {{ticket_id}} — {{title}}"
 
@@ -438,7 +438,7 @@ steps:
   - id: merge
     agent: closer
     input: |
-      Merge PR {{pr_number}} for {{ticket_id}} into main, verify, and clean up.
+      Merge PR {{pr_number}} for {{ticket_id}} into develop, verify, and clean up.
 
       PR: {{pr_number}}
       URL: {{pr_url}}
@@ -457,18 +457,41 @@ steps:
            a. Find the closed PR:
               gh pr list --repo Amakaflow/amakaflow-ui --state closed --json number,url,headRefName \
                 --jq '.[] | select(.headRefName | contains("{{ticket_id}}"))'
-           b. If a closed PR exists, check if the branch still has commits above main:
-              gh api repos/Amakaflow/amakaflow-ui/compare/main...<branch-name> --jq .ahead_by
+           b. If a closed PR exists, check if the branch still has commits above develop:
+              gh api repos/Amakaflow/amakaflow-ui/compare/develop...<branch-name> --jq .ahead_by
            c. If ahead_by > 0, the branch has real work — reopen the PR:
               gh pr reopen <pr_number> --repo Amakaflow/amakaflow-ui
               Then use this PR for all subsequent steps.
-           d. If ahead_by == 0, the branch is empty — reply STATUS: escalate with REASON: branch has no commits above main.
+           d. If ahead_by == 0, the branch is empty — reply STATUS: escalate with REASON: branch has no commits above develop.
 
       Task:
+      0. Check if PR is already merged (handle re-run case):
+         gh pr view <pr_number> --repo Amakaflow/amakaflow-ui --json state,mergeCommit --jq '{state: .state, sha: .mergeCommit.oid}'
+         If state is "MERGED": skip to step 5 verification directly.
+
       1. Check that CI checks have passed (ONE check, no polling):
          gh pr checks <pr_number> --repo Amakaflow/amakaflow-ui
          If checks are still running, wait up to 60 seconds checking every 10 seconds.
-         If checks fail, reply STATUS: escalate with details.
+         ⚠️ IMPORTANT: Only escalate if a REQUIRED check fails. Non-required checks (like
+         validate-ticket, claude-comment) may fail without blocking merge — ignore them.
+         To identify required checks, use:
+           gh api repos/Amakaflow/amakaflow-ui/branches/main/protection --jq '.required_status_checks.contexts'
+         Only escalate if a check listed as required has failed.
+
+         🚨 SPECIAL CASE — if the failing required check is named "review":
+         This means the automated Claude code review found Critical or Major issues.
+         Do NOT retry fix_and_pr. Instead:
+           1. Get the review comment:
+              gh pr view <pr_number> --repo Amakaflow/amakaflow-ui --json comments \
+                --jq '[.comments[] | select(.body | contains("## Automated Code Review"))] | last | .body'
+           2. Send a Telegram notification:
+              openclaw message send --channel telegram --to 7888191549 \
+                "🔍 **Claude review blocked merge for {{ticket_id}}**\n\nPR: <pr_url>\n\nThe automated review found issues that need attention. Please review the PR comment and decide whether to approve or request fixes."
+           3. Reply immediately:
+              STATUS: escalate
+              REASON: Claude review (required check) failed — human review needed
+              PR_NUMBER: <pr_number>
+              PR_URL: <pr_url>
 
       1b. CHECK FOR BLOCKING REVIEWS before attempting merge:
          gh pr view <pr_number> --repo Amakaflow/amakaflow-ui --json reviews,mergeStateStatus \
@@ -491,10 +514,10 @@ steps:
          gh pr merge <pr_number> --repo Amakaflow/amakaflow-ui --squash --delete-branch
          IMPORTANT: Check the exit code. If the command fails, do NOT proceed — report STATUS: escalate.
 
-      4. If NOT mergeable (conflicts with main): attempt rebase:
+      4. If NOT mergeable (conflicts with develop): attempt rebase:
          a. cd /tmp/{{ticket_id}}-work || git clone https://github.com/Amakaflow/amakaflow-ui.git /tmp/{{ticket_id}}-work
-         b. cd /tmp/{{ticket_id}}-work && git checkout <branch> && git fetch origin main
-         c. git rebase origin/main
+         b. cd /tmp/{{ticket_id}}-work && git checkout <branch> && git fetch origin develop
+         c. git rebase origin/develop
          d. If rebase succeeds: git push --force-with-lease, then try merge again
          e. If rebase fails: git rebase --abort, then reply STATUS: escalate
 
@@ -539,7 +562,7 @@ steps:
          - If state is "MERGED" but sha is null/empty: reply STATUS: escalate with REASON: PR merged but no commit SHA found
          - Only proceed if state == "MERGED" AND sha is present
 
-      1. Verify the merge commit exists on main:
+      1. Verify the merge commit exists on develop:
          gh api repos/Amakaflow/amakaflow-ui/commits/{{merge_sha}} --jq '.sha' 2>/dev/null
          If MERGE_SHA contains "[missing:", use the sha discovered in step 0 above.
 
