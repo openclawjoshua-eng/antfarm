@@ -117,7 +117,7 @@ function printUsage() {
       "",
       "antfarm medic install                Install medic watchdog cron",
       "antfarm medic uninstall              Remove medic cron",
-      "antfarm medic run                    Run medic check now (manual trigger)",
+      "antfarm medic run [--json]           Run medic check now (manual trigger)",
       "antfarm medic status                 Show medic health summary",
       "antfarm medic log [<count>]          Show recent medic check history",
       "",
@@ -300,7 +300,20 @@ async function main() {
     }
 
     if (action === "run") {
+      const wantsJson = args.includes("--json");
       const result = await runMedicCheck();
+      if (wantsJson) {
+        console.log(JSON.stringify({
+          id: result.id,
+          checkedAt: result.checkedAt,
+          issuesFound: result.issuesFound,
+          actionsTaken: result.actionsTaken,
+          summary: result.summary,
+          findings: result.findings,
+        }));
+        return;
+      }
+
       if (result.issuesFound === 0) {
         console.log(`All clear — no issues found (${result.checkedAt})`);
       } else {
@@ -390,7 +403,7 @@ async function main() {
     if (action === "fail") {
       if (!target) { process.stderr.write("Missing step-id.\n"); process.exit(1); }
       const error = args.slice(3).join(" ").trim() || "Unknown error";
-      const result = failStep(target, error);
+      const result = await failStep(target, error);
       process.stdout.write(JSON.stringify(result) + "\n");
       return;
     }

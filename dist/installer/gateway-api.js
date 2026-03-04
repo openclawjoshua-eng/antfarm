@@ -92,6 +92,11 @@ function runCli(args) {
     });
 }
 const UPDATE_HINT = `This may be fixed by updating OpenClaw: npm update -g openclaw`;
+function isTransientGatewayFailure(status) {
+    if (status === undefined)
+        return true;
+    return status === 404 || status >= 500;
+}
 // ---------------------------------------------------------------------------
 // Cron operations — HTTP first, CLI fallback
 // ---------------------------------------------------------------------------
@@ -119,8 +124,8 @@ export async function createAgentCronJob(job) {
         if (job.payload?.model) {
             args.push("--model", job.payload.model);
         }
-        if (job.delivery?.mode === "none") {
-            args.push("--no-deliver");
+        if (job.delivery?.mode === "announce") {
+            args.push("--announce");
         }
         if (!job.enabled) {
             args.push("--disabled");
@@ -152,7 +157,7 @@ async function createAgentCronJobHTTP(job) {
             headers,
             body: JSON.stringify({ tool: "cron", args: { action: "add", job }, sessionKey: "agent:main:main" }),
         });
-        if (response.status === 404)
+        if (isTransientGatewayFailure(response.status))
             return null; // signal CLI fallback
         if (!response.ok) {
             const text = await response.text();
@@ -185,8 +190,10 @@ export async function checkCronToolAvailable() {
         });
         if (response.ok)
             return { ok: true };
-        // Non-404 errors are real failures
-        if (response.status !== 404) {
+        if (isTransientGatewayFailure(response.status)) {
+            // fall through to CLI fallback
+        }
+        else {
             const text = await response.text();
             return { ok: false, error: `Gateway returned ${response.status}: ${text}` };
         }
@@ -234,7 +241,7 @@ async function listCronJobsHTTP() {
             headers,
             body: JSON.stringify({ tool: "cron", args: { action: "list" }, sessionKey: "agent:main:main" }),
         });
-        if (response.status === 404)
+        if (isTransientGatewayFailure(response.status))
             return null;
         if (!response.ok) {
             return { ok: false, error: `Gateway returned ${response.status}` };
@@ -310,7 +317,7 @@ async function deleteCronJobHTTP(jobId) {
             headers,
             body: JSON.stringify({ tool: "cron", args: { action: "remove", id: jobId }, sessionKey: "agent:main:main" }),
         });
-        if (response.status === 404)
+        if (isTransientGatewayFailure(response.status))
             return null;
         if (!response.ok) {
             return { ok: false, error: `Gateway returned ${response.status}` };
@@ -330,5 +337,60 @@ export async function deleteAgentCronJobs(namePrefix) {
         if (job.name.startsWith(namePrefix)) {
             await deleteCronJob(job.id);
         }
+    }
+}
+export async function sendSessionMessage(params) {
+    const payload = {
+        tool: "sessions_send",
+        args: {
+            action: "send",
+            message: params.message,
+            sessionKey: params.sessionKey,
+        },
+        sessionKey: params.sessionKey,
+    };
+    // --- Try HTTP first ---
+    const gateway = await getGatewayConfig();
+    try {
+        const headers = { "Content-Type": "application/json" };
+        if (gateway.secret)
+            headers["Authorization"] = `Bearer ${gateway.secret}`;
+        const response = await fetch(`${gateway.url}/tools/invoke`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify(payload),
+        });
+        if (response.ok) {
+            const result = await response.json();
+            return result.ok ? { ok: true } : { ok: false, error: result.error?.message ?? "Unknown error" };
+        }
+        if (isTransientGatewayFailure(response.status)) {
+            // fallback to CLI
+        }
+        else {
+            const text = await response.text();
+            return { ok: false, error: `Gateway returned ${response.status}: ${text}` };
+        }
+    }
+    catch {
+        // fallback to CLI
+    }
+    // --- Fallback to CLI ---
+    try {
+        await runCli([
+            "tool",
+            "run",
+            "--tool",
+            "sessions_send",
+            "--session",
+            params.sessionKey,
+            "--json",
+            "--message",
+            params.message,
+        ]);
+        return { ok: true };
+    }
+    catch (err) {
+        return { ok: false, error: `CLI fallback failed: ${err}. ${UPDATE_HINT}` };
     }
 }
